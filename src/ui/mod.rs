@@ -775,13 +775,11 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
 
-        // Project column: "project(session_id_short)"
-        let sid_short = if session.session_id.len() >= 7 {
-            &session.session_id[..7]
+        let sid_short = if session.session_id.len() >= 8 {
+            &session.session_id[..8]
         } else {
             &session.session_id
         };
-        let project_col = format!("{}({})", session.project_name, sid_short);
 
         // Summary column: LLM summary > pending > raw prompt > "—"
         let summary_col = app.session_summary(session);
@@ -794,11 +792,15 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(MAIN_FG),
                 )),
                 Cell::from(Span::styled(
-                    project_col,
+                    truncate_str(&session.project_name, 14),
                     Style::default().fg(TITLE),
                 )),
                 Cell::from(Span::styled(
-                    truncate_str(&summary_col, 28),
+                    sid_short.to_string(),
+                    Style::default().fg(INACTIVE_FG),
+                )),
+                Cell::from(Span::styled(
+                    summary_col,
                     Style::default().fg(MAIN_FG),
                 )),
                 Cell::from(Span::styled(status_icon, Style::default().fg(status_color))),
@@ -847,6 +849,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
                 Cell::from(""),
                 Cell::from(""),
                 Cell::from(""),
+                Cell::from(""),
             ])
             .height(1),
         );
@@ -859,10 +862,11 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
         Cell::from(""),
         Cell::from(Span::styled("Pid", header_style)),
         Cell::from(Span::styled("Project", header_style)),
+        Cell::from(Span::styled("Sess", header_style)),
         Cell::from(Span::styled("Summary", header_style)),
         Cell::from(Span::styled("Status", header_style)),
         Cell::from(Span::styled("Model", header_style)),
-        Cell::from(Span::styled("CTX", header_style)),
+        Cell::from(Span::styled("Context", header_style)),
         Cell::from(Span::styled("Tokens", header_style)),
         Cell::from(Span::styled("Mem", header_style)),
         Cell::from(Span::styled("Turn", header_style)),
@@ -872,8 +876,9 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
     let widths = [
         Constraint::Length(1),   // marker
         Constraint::Length(6),   // pid
-        Constraint::Length(18),  // project(session_id)
-        Constraint::Max(30),     // summary (capped at 30 chars)
+        Constraint::Length(14),  // project
+        Constraint::Length(9),   // session id (8 chars + pad)
+        Constraint::Min(10),     // summary (fills remaining space)
         Constraint::Length(6),   // status
         Constraint::Length(6),   // model
         Constraint::Length(7),   // context
