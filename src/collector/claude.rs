@@ -72,7 +72,7 @@ impl ClaudeCollector {
 
         let transcript_path = self.find_transcript(&sf.cwd, &sf.session_id);
 
-        let mut model = String::from("?");
+        let mut model = String::from("-");
         let mut total_input = 0u64;
         let mut total_output = 0u64;
         let mut total_cache_read = 0u64;
@@ -352,7 +352,7 @@ struct TranscriptResult {
 
 fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
     let mut result = TranscriptResult {
-        model: "?".to_string(),
+        model: "-".to_string(),
         total_input: 0,
         total_output: 0,
         total_cache_read: 0,
