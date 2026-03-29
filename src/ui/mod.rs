@@ -111,6 +111,31 @@ fn meter_bar(pct: f64, width: usize, gradient: &[Color; 101]) -> Vec<Span<'stati
     spans
 }
 
+/// Meter bar showing remaining quota: filled = remaining, color reflects urgency.
+/// When remaining is high → green (safe), when low → red (danger).
+fn remaining_bar(remaining_pct: f64, width: usize, gradient: &[Color; 101]) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let clamped = remaining_pct.clamp(0.0, 100.0);
+    let filled = ((clamped / 100.0) * width as f64).round() as usize;
+    let used_pct = 100.0 - clamped;
+    let mut spans = Vec::new();
+    for i in 0..width {
+        if i < filled {
+            // Color based on how much is used (urgency): green when lots remaining, red when little
+            let cell_pct = used_pct; // uniform color based on overall urgency
+            spans.push(Span::styled(
+                "■",
+                Style::default().fg(grad_at(gradient, cell_pct)),
+            ));
+        } else {
+            spans.push(Span::styled("■", Style::default().fg(METER_BG)));
+        }
+    }
+    spans
+}
+
 // ── braille sparkline ────────────────────────────────────────────────────────
 
 /// Render a braille sparkline from data points (0.0–1.0), colored with gradient.
@@ -581,23 +606,26 @@ fn draw_quota_panel(f: &mut Frame, app: &App, area: Rect) {
         let label = format!(" {}{}", rl.source.to_uppercase(), fresh_str);
         lines.push(Line::from(Span::styled(label, Style::default().fg(TITLE).add_modifier(Modifier::BOLD))));
 
-        if let Some(pct) = rl.five_hour_pct {
+        if let Some(used_pct) = rl.five_hour_pct {
+            let remaining = (100.0 - used_pct).clamp(0.0, 100.0);
             let reset = rl.five_hour_resets_at.map(|ts| format_reset_time(ts)).unwrap_or_default();
-            let c = grad_at(&cpu_grad, pct);
+            // Color by urgency: low remaining = red (high used), high remaining = green
+            let c = grad_at(&cpu_grad, used_pct);
             let mut s = vec![styled_label(" 5h ")];
-            s.extend(meter_bar(pct, bar_w, &cpu_grad));
-            s.push(Span::styled(format!(" {:>3.0}%", pct), Style::default().fg(c)));
+            s.extend(remaining_bar(remaining, bar_w, &cpu_grad));
+            s.push(Span::styled(format!(" {:>3.0}%", remaining), Style::default().fg(c)));
             lines.push(Line::from(s));
             if !reset.is_empty() {
                 lines.push(Line::from(Span::styled(format!("  {}", reset), Style::default().fg(GRAPH_TEXT))));
             }
         }
-        if let Some(pct) = rl.seven_day_pct {
+        if let Some(used_pct) = rl.seven_day_pct {
+            let remaining = (100.0 - used_pct).clamp(0.0, 100.0);
             let reset = rl.seven_day_resets_at.map(|ts| format_reset_time(ts)).unwrap_or_default();
-            let c = grad_at(&cpu_grad, pct);
+            let c = grad_at(&cpu_grad, used_pct);
             let mut s = vec![styled_label(" 7d ")];
-            s.extend(meter_bar(pct, bar_w, &cpu_grad));
-            s.push(Span::styled(format!(" {:>3.0}%", pct), Style::default().fg(c)));
+            s.extend(remaining_bar(remaining, bar_w, &cpu_grad));
+            s.push(Span::styled(format!(" {:>3.0}%", remaining), Style::default().fg(c)));
             lines.push(Line::from(s));
             if !reset.is_empty() {
                 lines.push(Line::from(Span::styled(format!("  {}", reset), Style::default().fg(GRAPH_TEXT))));
