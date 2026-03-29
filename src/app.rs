@@ -42,7 +42,7 @@ impl App {
             token_rates: VecDeque::with_capacity(GRAPH_HISTORY_LEN),
             rate_limits: Vec::new(),
             prev_tokens: HashMap::new(),
-            rate_limit_counter: 0,
+            rate_limit_counter: 5, // trigger on first tick
             collector: MultiCollector::new(),
             summaries,
             pending_summaries: HashSet::new(),
@@ -172,20 +172,29 @@ fn generate_summary(prompt: &str) -> String {
         Err(e) => Err(e),
     };
 
+    let fallback: String = prompt
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(28)
+        .collect();
+
     match result {
         Ok(output) if output.status.success() => {
             let raw = String::from_utf8_lossy(&output.stdout)
                 .trim()
                 .to_string();
-            // Validate: reject empty or too long output
-            if raw.is_empty() || raw.chars().count() > 60 {
-                prompt.chars().take(50).collect()
+            // Reject empty, too long, or prompt-echo outputs
+            if raw.is_empty()
+                || raw.chars().count() > 40
+                || raw.contains("Summarize")
+                || raw.starts_with("- ")
+            {
+                fallback
             } else {
-                // Strip quotes if LLM added them
                 raw.trim_matches('"').trim_matches('\'').to_string()
             }
         }
-        _ => prompt.chars().take(50).collect(),
+        _ => fallback,
     }
 }
 

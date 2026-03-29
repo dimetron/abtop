@@ -38,13 +38,7 @@ pub fn read_rate_limits() -> Vec<RateLimitInfo> {
         }
     }
 
-    // Codex: read from StatusLine hook output file
-    if let Some(codex_dir) = dirs::home_dir().map(|h| h.join(".codex")) {
-        let path = codex_dir.join(CLAUDE_RATE_FILE);
-        if let Some(info) = read_rate_file(&path, "codex") {
-            results.push(info);
-        }
-    }
+    // Codex: planned for v0.2 (reads from rollout JSONL, different schema)
 
     results
 }
@@ -62,6 +56,11 @@ fn read_rate_file(path: &PathBuf, default_source: &str) -> Option<RateLimitInfo>
         if now.saturating_sub(updated) > 600 {
             return None;
         }
+    }
+
+    // Reject if both windows are absent
+    if file.five_hour.is_none() && file.seven_day.is_none() {
+        return None;
     }
 
     let source = if file.source.is_empty() {
