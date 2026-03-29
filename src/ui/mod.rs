@@ -177,8 +177,8 @@ fn styled_label(text: &str) -> Span<'static> {
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
 
-    // Top panel height: enough for graph rows + border
-    let top_h = (app.sessions.len() as u16 + 4).min(12).max(7);
+    // Top panel height: fixed size, don't grow with session count
+    let top_h: u16 = 8;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -282,19 +282,20 @@ fn draw_top_panel(f: &mut Frame, app: &App, area: Rect) {
     // Render multi-row braille graph (each row covers a vertical slice)
     let mut graph_lines: Vec<Line> = Vec::new();
     if graph_h > 0 {
+        // Pre-compute sampled data (same for all rows)
+        let needed = graph_w * 2; // braille encodes 2 data points per char
+        let sampled: Vec<f64> = if normalized.len() >= needed {
+            normalized[normalized.len() - needed..].to_vec()
+        } else {
+            let mut v = vec![0.0; needed - normalized.len()];
+            v.extend_from_slice(&normalized);
+            v
+        };
+
         for row in 0..graph_h {
             // Each row covers a vertical band: top row = high values, bottom = low
             let row_lo = (graph_h - 1 - row) as f64 / graph_h as f64;
             let row_hi = (graph_h - row) as f64 / graph_h as f64;
-
-            let needed = graph_w * 2; // braille encodes 2 data points per char
-            let sampled: Vec<f64> = if normalized.len() >= needed {
-                normalized[normalized.len() - needed..].to_vec()
-            } else {
-                let mut v = vec![0.0; needed - normalized.len()];
-                v.extend_from_slice(&normalized);
-                v
-            };
 
             let mut spans = Vec::new();
             for col in 0..graph_w {
@@ -363,10 +364,15 @@ fn draw_top_panel(f: &mut Frame, app: &App, area: Rect) {
         let warn = if raw_pct >= 90.0 { " ⚠" } else { "" };
         let pct_color = grad_at(&cpu_grad, bar_pct);
 
+        let display_name = if session.initial_prompt.is_empty() {
+            &session.project_name
+        } else {
+            &session.initial_prompt
+        };
         let label = format!(
             " S{} {:<w$}",
             i + 1,
-            truncate_str(&session.project_name, name_w),
+            truncate_str(display_name, name_w),
             w = name_w
         );
         let mut spans = vec![Span::styled(label, Style::default().fg(MAIN_FG))];
@@ -691,9 +697,9 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
                 )),
                 Cell::from(Span::styled(
                     if session.initial_prompt.is_empty() {
-                        truncate_str(&session.project_name, 14)
+                        session.project_name.clone()
                     } else {
-                        truncate_str(&session.initial_prompt, 14)
+                        session.initial_prompt.clone()
                     },
                     Style::default().fg(TITLE),
                 )),
