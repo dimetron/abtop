@@ -18,6 +18,7 @@ const GRAPH_TEXT: Color = Color::Rgb(96, 96, 96);         // #60
 const METER_BG: Color = Color::Rgb(64, 64, 64);          // #40
 const PROC_MISC: Color = Color::Rgb(13, 231, 86);        // #0de756
 const DIV_LINE: Color = Color::Rgb(48, 48, 48);          // #30
+const SESSION_ID: Color = Color::Rgb(176, 160, 112);     // #b0a070 muted amber
 
 // Box border colors (per panel, muted tones)
 const CPU_BOX: Color = Color::Rgb(85, 109, 89);          // #556d59
@@ -177,14 +178,14 @@ fn styled_label(text: &str) -> Span<'static> {
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
 
-    // Top panel height: session context bars (header + sessions + summary + borders)
+    // Top panel height: header + sessions + summary + borders
     let top_h: u16 = (app.sessions.len() as u16 + 4).min(10).max(5);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),      // header bar
-            Constraint::Length(top_h),  // top: session context bars
+            Constraint::Length(top_h),  // top: context panel
             Constraint::Length(8),      // mid: quota + tokens + projects + ports
             Constraint::Min(10),       // sessions (full width)
             Constraint::Length(1),     // footer
@@ -240,7 +241,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-// ── context panel: per-session context bars (full width) ────────────────────
+// ── context panel: left = token rate sparkline, right = context bars ────────
 
 fn draw_context_panel(f: &mut Frame, app: &App, area: Rect) {
     let cpu_grad = make_gradient(CPU_START, CPU_MID, CPU_END);
@@ -255,57 +256,126 @@ fn draw_context_panel(f: &mut Frame, app: &App, area: Rect) {
         height: area.height.saturating_sub(2),
     };
 
-    let name_w = 14;
-    let inner_w = (inner.width as usize).saturating_sub(name_w + 10);
-    let bar_width = inner_w.min(60).max(4);
+    // Split: left = sparkline graph, right = context bars
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(inner);
 
+    // ── Left: token rate braille sparkline graph ──
+    draw_context_sparkline(f, app, halves[0], &cpu_grad);
+
+    // ── Right: per-session context bars (table) ──
+    draw_context_bars(f, app, halves[1], &cpu_grad);
+}
+
+fn draw_context_sparkline(f: &mut Frame, app: &App, area: Rect, cpu_grad: &[Color; 101]) {
+    let avail_h = area.height as usize;
+    let avail_w = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
 
-    lines.push(Line::from(Span::styled(
-        " SESSION CONTEXT",
-        Style::default().fg(TITLE).add_modifier(Modifier::BOLD),
-    )));
+    // Token rate sparkline (fills most of the height)
+    let spark_w = avail_w.saturating_sub(2).max(4);
+    let rates: Vec<f64> = app.token_rates.iter().copied().collect();
+    let max_rate = rates.iter().cloned().fold(1.0_f64, f64::max);
+    let normalized: Vec<f64> = rates.iter().map(|&v| v / max_rate).collect();
 
-    for (i, session) in app.sessions.iter().enumerate() {
+    // Graph title
+    lines.push(Line::from(vec![
+        Span::styled(" Token Rate", Style::default().fg(TITLE).add_modifier(Modifier::BOLD)),
+    ]));
+
+    // Render sparkline across available rows using braille
+    let graph_h = avail_h.saturating_sub(2); // title + summary line
+    for row in 0..graph_h {
+        // Each row shows a horizontal slice of the sparkline
+        // For simplicity, render the full sparkline on the first graph row
+        if row == 0 {
+            let mut spark_spans = vec![Span::styled(" ", Style::default())];
+            spark_spans.extend(braille_sparkline(&normalized, spark_w, cpu_grad));
+            lines.push(Line::from(spark_spans));
+        } else {
+            lines.push(Line::from(""));
+        }
+    }
+
+    // Summary line: total tokens + rate
+    let total_tokens: u64 = app.sessions.iter().map(|s| s.total_tokens()).sum();
+    let ticks_per_min = 30usize;
+    let tokens_per_min: f64 = rates.iter().rev().take(ticks_per_min).sum();
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {}", fmt_tokens(total_tokens)), Style::default().fg(MAIN_FG)),
+        Span::styled(format!(" {}/m", fmt_tokens(tokens_per_min as u64)), Style::default().fg(GRAPH_TEXT)),
+    ]));
+
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_context_bars(f: &mut Frame, app: &App, area: Rect, cpu_grad: &[Color; 101]) {
+    let header_style = Style::default().fg(MAIN_FG).add_modifier(Modifier::BOLD);
+
+    // bar width = remaining space after Project(14) + Session(9) + pct(5) + padding
+    let bar_width = (area.width as usize).saturating_sub(30).min(60).max(4);
+
+    let mut rows = Vec::new();
+
+    for session in &app.sessions {
         let raw_pct = session.context_percent;
         let bar_pct = raw_pct.min(100.0);
-        let warn = if raw_pct >= 90.0 { " ⚠" } else { "" };
-        let pct_color = grad_at(&cpu_grad, bar_pct);
+        let warn = if raw_pct >= 90.0 { "⚠" } else { "" };
+        let pct_color = grad_at(cpu_grad, bar_pct);
 
-        let sid_short = if session.session_id.len() >= 6 {
-            &session.session_id[..6]
+        let sid_short = if session.session_id.len() >= 8 {
+            &session.session_id[..8]
         } else {
             &session.session_id
         };
-        let ctx_label = format!("{} {}", session.project_name, sid_short);
-        let label = format!(
-            " S{} {:<w$}",
-            i + 1,
-            truncate_str(&ctx_label, name_w),
-            w = name_w
-        );
-        let mut spans = vec![Span::styled(label, Style::default().fg(MAIN_FG))];
-        spans.extend(meter_bar(bar_pct, bar_width, &cpu_grad));
-        spans.push(Span::styled(
-            format!(" {:>3.0}%{}", raw_pct, warn),
-            Style::default().fg(pct_color),
-        ));
-        lines.push(Line::from(spans));
+
+        rows.push(Row::new(vec![
+            Cell::from(Span::styled(
+                truncate_str(&session.project_name, 14),
+                Style::default().fg(TITLE),
+            )),
+            Cell::from(Span::styled(
+                sid_short.to_string(),
+                Style::default().fg(SESSION_ID),
+            )),
+            Cell::from(Line::from({
+                let mut spans = meter_bar(bar_pct, bar_width, cpu_grad);
+                spans.push(Span::styled(
+                    format!(" {:>3.0}%{}", raw_pct, warn),
+                    Style::default().fg(pct_color),
+                ));
+                spans
+            })),
+        ]));
     }
 
     if app.sessions.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  no active sessions",
-            Style::default().fg(INACTIVE_FG),
-        )));
+        rows.push(Row::new(vec![
+            Cell::from(Span::styled(
+                "no active sessions",
+                Style::default().fg(INACTIVE_FG),
+            )),
+            Cell::from(""),
+            Cell::from(""),
+        ]));
     }
 
-    lines.push(Line::from(Span::styled(
-        format!(" sessions: {}", app.sessions.len()),
-        Style::default().fg(GRAPH_TEXT),
-    )));
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Project", header_style)),
+        Cell::from(Span::styled("Session", header_style)),
+        Cell::from(Span::styled("Context", header_style)),
+    ]);
 
-    f.render_widget(Paragraph::new(lines), inner);
+    let widths = [
+        Constraint::Length(14),
+        Constraint::Length(9),
+        Constraint::Min(10),
+    ];
+
+    let table = Table::new(rows, widths).header(header);
+    f.render_widget(table, area);
 }
 
 // ── quota panel: rate limit gauges + token rate ─────────────────────────────
@@ -313,7 +383,7 @@ fn draw_context_panel(f: &mut Frame, app: &App, area: Rect) {
 fn draw_quota_panel(f: &mut Frame, app: &App, area: Rect) {
     let cpu_grad = make_gradient(CPU_START, CPU_MID, CPU_END);
 
-    let block = btop_block("quota", "¹", CPU_BOX);
+    let block = btop_block("quota", "²", CPU_BOX);
     f.render_widget(block, area);
 
     let inner = Rect {
@@ -482,7 +552,7 @@ fn draw_tokens_panel(f: &mut Frame, app: &App, area: Rect) {
     } else {
         "tokens".to_string()
     };
-    let block = btop_block(&panel_title, "²", MEM_BOX);
+    let block = btop_block(&panel_title, "³", MEM_BOX);
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -631,7 +701,7 @@ fn draw_ports_panel(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    let block = btop_block("ports", "³", NET_BOX);
+    let block = btop_block("ports", "⁴", NET_BOX);
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -639,7 +709,7 @@ fn draw_ports_panel(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
     // Render the outer block
-    let block = btop_block("sessions", "⁴", PROC_BOX);
+    let block = btop_block("sessions", "⁵", PROC_BOX);
     f.render_widget(block, area);
 
     let inner = Rect {
@@ -720,7 +790,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
                 Cell::from(Span::styled(agent_label, Style::default().fg(agent_color))),
                 Cell::from(Span::styled(
                     format!("{}", session.pid),
-                    Style::default().fg(MAIN_FG),
+                    Style::default().fg(INACTIVE_FG),
                 )),
                 Cell::from(Span::styled(
                     truncate_str(&session.project_name, 14),
@@ -728,7 +798,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
                 )),
                 Cell::from(Span::styled(
                     sid_short.to_string(),
-                    Style::default().fg(INACTIVE_FG),
+                    Style::default().fg(SESSION_ID),
                 )),
                 Cell::from(Span::styled(
                     summary_col,
@@ -797,7 +867,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
         Cell::from(Span::styled("AI", header_style)),
         Cell::from(Span::styled("Pid", header_style)),
         Cell::from(Span::styled("Project", header_style)),
-        Cell::from(Span::styled("Sess", header_style)),
+        Cell::from(Span::styled("Session", header_style)),
         Cell::from(Span::styled("Summary", header_style)),
         Cell::from(Span::styled("Status", header_style)),
         Cell::from(Span::styled("Model", header_style)),
@@ -1044,17 +1114,18 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 // ── utility functions ────────────────────────────────────────────────────────
 
 fn shorten_model(model: &str) -> String {
-    // "claude-opus-4-6" → "opus", "claude-sonnet-4-6" → "sonn", "claude-haiku-4-5" → "haiku"
+    // "claude-opus-4-6" → "opus4.6", "claude-sonnet-4-6" → "sonnet4.6", "claude-haiku-4-5" → "haiku4.5"
     let s = model
         .strip_prefix("claude-")
         .unwrap_or(model);
-    let s = s
-        .trim_end_matches("-4-6")
-        .trim_end_matches("-4-5")
-        .trim_end_matches("[1m]");
-    match s {
-        "sonnet" => "sonn".to_string(),
-        other => other.to_string(),
+    let s = s.trim_end_matches("[1m]");
+    // Extract name and version: "opus-4-6" → ("opus", "4.6")
+    if let Some(pos) = s.find(|c: char| c.is_ascii_digit()) {
+        let name = s[..pos].trim_end_matches('-');
+        let ver = s[pos..].replace('-', ".");
+        format!("{}{}", name, ver)
+    } else {
+        s.to_string()
     }
 }
 
