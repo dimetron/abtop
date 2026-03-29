@@ -1,6 +1,7 @@
 mod app;
 mod collector;
 mod model;
+mod setup;
 mod ui;
 
 use app::App;
@@ -12,6 +13,12 @@ use std::io::{self, stdout};
 use std::time::Duration;
 
 fn main() -> io::Result<()> {
+    // --setup flag: configure StatusLine hook and exit
+    if std::env::args().any(|a| a == "--setup") {
+        setup::run_setup();
+        return Ok(());
+    }
+
     // --once flag: print snapshot and exit
     if std::env::args().any(|a| a == "--once") {
         let mut app = App::new();
