@@ -198,7 +198,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(25), // tokens
-            Constraint::Percentage(25), // usage (rate limits)
+            Constraint::Percentage(25), // usage
             Constraint::Percentage(25), // projects
             Constraint::Percentage(25), // ports
         ])
@@ -257,88 +257,93 @@ fn draw_top_panel(f: &mut Frame, app: &App, area: Rect) {
         height: area.height.saturating_sub(2),
     };
 
-    // Left: live braille graph, Right: per-session context bars
+    // Left: quota gauges + token summary, Right: per-session context bars
     let inner_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(inner);
 
-    // ── Left: live token-rate braille graph (like btop CPU graph) ──
-    let graph_area = inner_chunks[0];
-    let graph_w = graph_area.width as usize;
-    let graph_h = graph_area.height as usize;
+    // ── Left: quota gauges + token rate summary ──
+    let quota_area = inner_chunks[0];
+    let mut quota_lines: Vec<Line> = Vec::new();
 
-    let rates = &app.token_rates;
-    let max_rate = rates.iter().cloned().fold(1.0_f64, f64::max);
-
-    // Normalize rates to 0.0–1.0
-    let normalized: Vec<f64> = rates.iter().map(|&r| r / max_rate).collect();
-
-    // Render multi-row braille graph (each row covers a vertical slice)
-    let mut graph_lines: Vec<Line> = Vec::new();
-    if graph_h > 0 {
-        // Pre-compute sampled data (same for all rows)
-        let needed = graph_w * 2; // braille encodes 2 data points per char
-        let sampled: Vec<f64> = if normalized.len() >= needed {
-            normalized[normalized.len() - needed..].to_vec()
-        } else {
-            let mut v = vec![0.0; needed - normalized.len()];
-            v.extend_from_slice(&normalized);
-            v
-        };
-
-        for row in 0..graph_h {
-            // Each row covers a vertical band: top row = high values, bottom = low
-            let row_lo = (graph_h - 1 - row) as f64 / graph_h as f64;
-            let row_hi = (graph_h - row) as f64 / graph_h as f64;
-
-            let mut spans = Vec::new();
-            for col in 0..graph_w {
-                // Map values to this row's band (0-4 levels within the band)
-                let v_prev = sampled[col * 2];
-                let v_cur = sampled[col * 2 + 1];
-
-                let to_level = |v: f64| -> usize {
-                    if v <= row_lo { 0 }
-                    else if v >= row_hi { 4 }
-                    else {
-                        let frac = (v - row_lo) / (row_hi - row_lo);
-                        (frac * 4.0).round().min(4.0) as usize
-                    }
-                };
-
-                let prev = to_level(v_prev);
-                let cur = to_level(v_cur);
-                let idx = (prev * 5 + cur).min(24);
-                let pct = (v_cur * 100.0).round();
-                let color = grad_at(&cpu_grad, pct);
-                spans.push(Span::styled(
-                    BRAILLE_UP[idx].to_string(),
-                    Style::default().fg(color),
-                ));
+    if app.rate_limits.is_empty() {
+        quota_lines.push(Line::from(Span::styled(" QUOTA", Style::default().fg(TITLE).add_modifier(Modifier::BOLD))));
+        quota_lines.push(Line::from(Span::styled("  — unavailable", Style::default().fg(INACTIVE_FG))));
+        quota_lines.push(Line::from(Span::styled("  run: abtop --setup", Style::default().fg(GRAPH_TEXT))));
+    } else {
+        let bar_w = (quota_area.width as usize).saturating_sub(20).min(20).max(5);
+        for rl in &app.rate_limits {
+            let fresh_str = rl.updated_at.map(|ts| {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                let ago = now.saturating_sub(ts);
+                if ago < 60 { format!("{}s ago", ago) } else { format!("{}m ago", ago / 60) }
+            }).unwrap_or_default();
+            let mut hdr = vec![Span::styled(format!(" QUOTA {}", rl.source.to_uppercase()), Style::default().fg(TITLE).add_modifier(Modifier::BOLD))];
+            if !fresh_str.is_empty() {
+                hdr.push(Span::styled(format!("  {}", fresh_str), Style::default().fg(INACTIVE_FG)));
             }
-            graph_lines.push(Line::from(spans));
+            quota_lines.push(Line::from(hdr));
+
+            if let Some(pct) = rl.five_hour_pct {
+                let reset = rl.five_hour_resets_at.map(|ts| format_reset_time(ts)).unwrap_or_default();
+                let c = grad_at(&cpu_grad, pct);
+                let mut s = vec![styled_label(" 5h ")];
+                s.extend(meter_bar(pct, bar_w, &cpu_grad));
+                s.push(Span::styled(format!(" {:>3.0}%", pct), Style::default().fg(c)));
+                if !reset.is_empty() { s.push(Span::styled(format!("  {}", reset), Style::default().fg(GRAPH_TEXT))); }
+                quota_lines.push(Line::from(s));
+            }
+            if let Some(pct) = rl.seven_day_pct {
+                let reset = rl.seven_day_resets_at.map(|ts| format_reset_time(ts)).unwrap_or_default();
+                let c = grad_at(&cpu_grad, pct);
+                let mut s = vec![styled_label(" 7d ")];
+                s.extend(meter_bar(pct, bar_w, &cpu_grad));
+                s.push(Span::styled(format!(" {:>3.0}%", pct), Style::default().fg(c)));
+                if !reset.is_empty() { s.push(Span::styled(format!("  {}", reset), Style::default().fg(GRAPH_TEXT))); }
+                quota_lines.push(Line::from(s));
+            }
         }
     }
 
-    // Add rate summary at bottom of graph
-    let last_rate = rates.back().copied().unwrap_or(0.0);
+    // Token summary + mini block-bar sparkline at bottom
     let total_tokens: u64 = app.sessions.iter().map(|s| s.total_tokens()).sum();
-    if !graph_lines.is_empty() {
-        let last_idx = graph_lines.len() - 1;
-        graph_lines[last_idx] = Line::from(vec![
-            Span::styled(
-                format!(" {}/tick", fmt_tokens(last_rate as u64)),
-                Style::default().fg(GRAPH_TEXT),
-            ),
-            Span::styled(
-                format!("  total: {}", fmt_tokens(total_tokens)),
-                Style::default().fg(MAIN_FG),
-            ),
-        ]);
+    let rates = &app.token_rates;
+    let ticks_per_min = 30usize;
+    let tokens_per_min: f64 = rates.iter().rev().take(ticks_per_min).sum();
+    let spark_chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let spark_w = (quota_area.width as usize).saturating_sub(22).min(15).max(3);
+    let rate_vec: Vec<f64> = rates.iter().copied().collect();
+    let mut min_buckets: Vec<f64> = Vec::new();
+    {
+        let mut bi = 0;
+        while bi < rate_vec.len() {
+            let end = (bi + ticks_per_min).min(rate_vec.len());
+            min_buckets.push(rate_vec[bi..end].iter().sum());
+            bi = end;
+        }
     }
+    let display_buckets: Vec<f64> = if min_buckets.len() > spark_w {
+        min_buckets[min_buckets.len() - spark_w..].to_vec()
+    } else {
+        let mut v = vec![0.0; spark_w - min_buckets.len()];
+        v.extend_from_slice(&min_buckets);
+        v
+    };
+    let max_bucket = display_buckets.iter().cloned().fold(1.0_f64, f64::max);
+    let spark_str: String = display_buckets.iter().map(|&v| {
+        let l = ((v / max_bucket) * 7.0).round() as usize;
+        spark_chars[l.min(7)]
+    }).collect();
 
-    f.render_widget(Paragraph::new(graph_lines), graph_area);
+    let avail_h = quota_area.height as usize;
+    while quota_lines.len() < avail_h.saturating_sub(1) { quota_lines.push(Line::from("")); }
+    quota_lines.push(Line::from(vec![
+        Span::styled(format!(" {}", fmt_tokens(total_tokens)), Style::default().fg(MAIN_FG)),
+        Span::styled(format!(" {} ", spark_str), Style::default().fg(grad_at(&cpu_grad, 50.0))),
+        Span::styled(format!("{}/min", fmt_tokens(tokens_per_min as u64)), Style::default().fg(GRAPH_TEXT)),
+    ]));
+    f.render_widget(Paragraph::new(quota_lines), quota_area);
 
     // ── Right: per-session context bars ──
     let ctx_area = inner_chunks[1];
@@ -606,14 +611,15 @@ fn draw_projects_panel(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )]));
         let branch = if session.git_branch.is_empty() {
-            "?".to_string()
+            "no git".to_string()
         } else {
             session.git_branch.clone()
         };
         let used_grad = make_gradient(USED_START, USED_MID, USED_END);
+        let branch_color = if session.git_branch.is_empty() { INACTIVE_FG } else { MAIN_FG };
         let mut branch_spans = vec![
             Span::styled("   ", Style::default()),
-            Span::styled(branch, Style::default().fg(MAIN_FG)),
+            Span::styled(branch, Style::default().fg(branch_color)),
         ];
         if session.git_added > 0 || session.git_modified > 0 {
             branch_spans.push(Span::styled(" ", Style::default()));
@@ -730,11 +736,11 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
         height: area.height.saturating_sub(2),
     };
 
-    // Session list: 1 header + sessions * 2 (main + task)
-    // Reserve at least 5 rows for detail section (children, subagents, etc.)
+    // Session list: 1 header + 2 rows per session (main + 1 task line)
+    let session_rows: u16 = app.sessions.len() as u16 * 2;
     let detail_reserve = 5.min(inner.height / 2);
     let max_table = inner.height.saturating_sub(detail_reserve);
-    let table_h = (1 + app.sessions.len() as u16 * 2).min(max_table);
+    let table_h = (1 + session_rows).min(max_table);
 
     let panel_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -751,6 +757,12 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
     for (i, session) in app.sessions.iter().enumerate() {
         let selected = i == app.selected;
         let marker = if selected { "►" } else { " " };
+
+        let agent_icon = match session.agent_cli {
+            "claude" => ("✦", Color::Rgb(217, 119, 60)),  // Claude orange
+            "codex"  => ("◇", Color::Rgb(16, 163, 127)),  // Codex green
+            _        => ("?", INACTIVE_FG),
+        };
 
         let (status_icon, status_color) = match &session.status {
             crate::model::SessionStatus::Working => ("● Work", PROC_MISC),
@@ -787,6 +799,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
         rows.push(
             Row::new(vec![
                 Cell::from(Span::styled(marker, Style::default().fg(HI_FG))),
+                Cell::from(Span::styled(agent_icon.0, Style::default().fg(agent_icon.1))),
                 Cell::from(Span::styled(
                     format!("{}", session.pid),
                     Style::default().fg(MAIN_FG),
@@ -833,17 +846,20 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
             .height(1),
         );
 
-        // 2nd line: current task
+        // 2nd line: current task (last tool_use = currently running)
+        // Placed in Summary column (index 5) so it uses the wide Min() space
+        let task_text = session.current_tasks.last().map(|s| s.as_str()).unwrap_or("");
         rows.push(
             Row::new(vec![
                 Cell::from(""),
                 Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
                 Cell::from(Span::styled(
-                    format!("└─ {}", truncate_str(&session.current_tasks.first().map(|s| s.as_str()).unwrap_or(""), 50)),
+                    format!("└─ {}", task_text),
                     Style::default().fg(GRAPH_TEXT),
                 )),
-                Cell::from(""),
-                Cell::from(""),
                 Cell::from(""),
                 Cell::from(""),
                 Cell::from(""),
@@ -860,6 +876,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
         .add_modifier(Modifier::BOLD);
     let header = Row::new(vec![
         Cell::from(""),
+        Cell::from(""),
         Cell::from(Span::styled("Pid", header_style)),
         Cell::from(Span::styled("Project", header_style)),
         Cell::from(Span::styled("Sess", header_style)),
@@ -875,6 +892,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
 
     let widths = [
         Constraint::Length(1),   // marker
+        Constraint::Length(2),   // agent icon (✦/◇)
         Constraint::Length(6),   // pid
         Constraint::Length(14),  // project
         Constraint::Length(9),   // session id (8 chars + pad)

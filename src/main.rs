@@ -96,8 +96,8 @@ fn print_snapshot(app: &App) {
             session.mem_mb,
             session.elapsed_display(),
         );
-        if !session.current_tasks.is_empty() {
-            println!("       └─ {}", session.current_tasks.first().unwrap_or(&String::new()));
+        if let Some(task) = session.current_tasks.last() {
+            println!("       └─ {}", task);
         }
         for child in &session.children {
             let port = child.port.map(|p| format!(":{}", p)).unwrap_or_default();
