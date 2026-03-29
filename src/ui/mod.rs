@@ -296,6 +296,12 @@ fn draw_top_panel(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
+    // Session count summary
+    lines.push(Line::from(Span::styled(
+        format!(" sessions: {}", app.sessions.len()),
+        Style::default().fg(GRAPH_TEXT),
+    )));
+
     let ctx_block = btop_block("context", "", CPU_BOX);
     f.render_widget(Paragraph::new(lines).block(ctx_block), chunks[1]);
 }
@@ -360,12 +366,29 @@ fn draw_tokens_panel(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(grad_at(&cached_grad, 80.0)),
     ));
 
+    // Per-turn sparkline from selected session's token_history
+    let cpu_grad = make_gradient(CPU_START, CPU_MID, CPU_END);
+    let all_history: Vec<u64> = app
+        .sessions
+        .get(app.selected)
+        .map(|s| s.token_history.clone())
+        .unwrap_or_default();
+    let spark_w = (area.width as usize).saturating_sub(16).min(20).max(5);
+    let max_val = all_history.iter().copied().max().unwrap_or(1).max(1);
+    let normalized: Vec<f64> = all_history
+        .iter()
+        .map(|&v| v as f64 / max_val as f64)
+        .collect();
+    let mut spark_line_spans = vec![styled_label(" ")];
+    spark_line_spans.extend(braille_sparkline(&normalized, spark_w, &cpu_grad));
+    spark_line_spans.push(Span::styled(" tokens/turn", Style::default().fg(GRAPH_TEXT)));
+
     let lines = vec![
         Line::from(total_line),
         Line::from(input_line),
         Line::from(output_line),
         Line::from(cache_line),
-        Line::from(""),
+        Line::from(spark_line_spans),
         Line::from(vec![
             styled_label(" Turns: "),
             Span::styled(format!("{}", turns), Style::default().fg(MAIN_FG)),
@@ -401,10 +424,32 @@ fn draw_projects_panel(f: &mut Frame, app: &App, area: Rect) {
         } else {
             session.git_branch.clone()
         };
-        lines.push(Line::from(vec![
+        let used_grad = make_gradient(USED_START, USED_MID, USED_END);
+        let mut branch_spans = vec![
             Span::styled("   ", Style::default()),
             Span::styled(branch, Style::default().fg(MAIN_FG)),
-        ]));
+        ];
+        if session.git_added > 0 || session.git_modified > 0 {
+            branch_spans.push(Span::styled(" ", Style::default()));
+            if session.git_added > 0 {
+                branch_spans.push(Span::styled(
+                    format!("+{}", session.git_added),
+                    Style::default().fg(PROC_MISC),
+                ));
+            }
+            if session.git_modified > 0 {
+                if session.git_added > 0 {
+                    branch_spans.push(Span::styled(" ", Style::default()));
+                }
+                branch_spans.push(Span::styled(
+                    format!("~{}", session.git_modified),
+                    Style::default().fg(grad_at(&used_grad, 70.0)),
+                ));
+            }
+        } else {
+            branch_spans.push(Span::styled(" ✓clean", Style::default().fg(PROC_MISC)));
+        }
+        lines.push(Line::from(branch_spans));
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -500,11 +545,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
             crate::model::SessionStatus::Done => ("✓ Done", INACTIVE_FG),
         };
 
-        let model_short = session
-            .model
-            .replace("claude-", "")
-            .replace("-4-6", "")
-            .replace("-4-5", "");
+        let model_short = shorten_model(&session.model);
 
         let ctx_color = grad_at(&proc_grad, session.context_percent);
 
@@ -639,6 +680,92 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
             }
         }
 
+        // Subagents section
+        if !session.subagents.is_empty() {
+            rows.push(Row::new(vec![Cell::from(""); 9]).height(1));
+            rows.push(
+                Row::new(vec![
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(Span::styled(
+                        "SUBAGENTS",
+                        Style::default()
+                            .fg(TITLE)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                ])
+                .height(1),
+            );
+            for sa in &session.subagents {
+                let (icon, icon_color) = if sa.status == "working" {
+                    ("●", PROC_MISC)
+                } else {
+                    ("✓", INACTIVE_FG)
+                };
+                rows.push(
+                    Row::new(vec![
+                        Cell::from(""),
+                        Cell::from(""),
+                        Cell::from(Line::from(vec![
+                            Span::styled(
+                                format!(" Agent {}  ", truncate_str(&sa.name, 16)),
+                                Style::default().fg(MAIN_FG),
+                            ),
+                            Span::styled(icon, Style::default().fg(icon_color)),
+                            Span::styled(
+                                format!(" {}", fmt_tokens(sa.tokens)),
+                                Style::default().fg(GRAPH_TEXT),
+                            ),
+                        ])),
+                        Cell::from(""),
+                        Cell::from(""),
+                        Cell::from(""),
+                        Cell::from(""),
+                        Cell::from(""),
+                        Cell::from(""),
+                    ])
+                    .height(1),
+                );
+            }
+        }
+
+        // MEM status line
+        {
+            let cpu_grad = make_gradient(CPU_START, CPU_MID, CPU_END);
+            let mem_color = if session.mem_line_count >= 180 {
+                grad_at(&cpu_grad, 100.0)
+            } else {
+                GRAPH_TEXT
+            };
+            rows.push(Row::new(vec![Cell::from(""); 9]).height(1));
+            rows.push(
+                Row::new(vec![
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(Span::styled(
+                        format!(
+                            "MEM {} files · {}/200 lines",
+                            session.mem_file_count, session.mem_line_count
+                        ),
+                        Style::default().fg(mem_color),
+                    )),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                ])
+                .height(1),
+            );
+        }
+
         // Session info line
         rows.push(Row::new(vec![Cell::from(""); 9]).height(1));
         rows.push(
@@ -727,6 +854,21 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ── utility functions ────────────────────────────────────────────────────────
+
+fn shorten_model(model: &str) -> String {
+    // "claude-opus-4-6" → "opus", "claude-sonnet-4-6" → "sonn", "claude-haiku-4-5" → "haiku"
+    let s = model
+        .strip_prefix("claude-")
+        .unwrap_or(model);
+    let s = s
+        .trim_end_matches("-4-6")
+        .trim_end_matches("-4-5")
+        .trim_end_matches("[1m]");
+    match s {
+        "sonnet" => "sonn".to_string(),
+        other => other.to_string(),
+    }
+}
 
 fn fmt_mem_kb(kb: u64) -> String {
     if kb >= 1_048_576 {

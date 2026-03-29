@@ -18,6 +18,14 @@ pub struct ChildProcess {
 }
 
 #[derive(Debug, Clone)]
+pub struct SubAgent {
+    pub name: String,
+    pub agent_type: String,
+    pub status: String,
+    pub tokens: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct AgentSession {
     pub pid: u32,
     pub session_id: String,
@@ -36,6 +44,12 @@ pub struct AgentSession {
     pub mem_mb: u64,
     pub version: String,
     pub git_branch: String,
+    pub git_added: u32,
+    pub git_modified: u32,
+    pub token_history: Vec<u64>,
+    pub subagents: Vec<SubAgent>,
+    pub mem_file_count: u32,
+    pub mem_line_count: u32,
     pub children: Vec<ChildProcess>,
     pub transcript_offset: u64,
 }

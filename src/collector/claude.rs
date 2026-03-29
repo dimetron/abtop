@@ -1,4 +1,4 @@
-use crate::model::{AgentSession, ChildProcess, SessionFile, SessionStatus};
+use crate::model::{AgentSession, ChildProcess, SessionFile, SessionStatus, SubAgent};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -85,6 +85,7 @@ impl ClaudeCollector {
         let mut version = String::new();
         let mut git_branch = String::new();
         let mut last_activity = std::time::UNIX_EPOCH;
+        let mut token_history = Vec::new();
 
         if let Some(ref tp) = transcript_path {
             // Always parse from beginning to get correct cumulative totals.
@@ -103,6 +104,7 @@ impl ClaudeCollector {
             version = result.version;
             git_branch = result.git_branch;
             last_activity = result.last_activity;
+            token_history = result.token_history;
         }
 
         let status = if !pid_alive {
@@ -146,6 +148,18 @@ impl ClaudeCollector {
             }
         }
 
+        // Git stats: added and modified file counts
+        let (git_added, git_modified) = Self::collect_git_stats(&sf.cwd);
+
+        // Subagent discovery
+        let encoded_path = sf.cwd.replace('/', "-");
+        let subagents_dir = self.projects_dir.join(&encoded_path).join(&sf.session_id).join("subagents");
+        let subagents = Self::collect_subagents(&subagents_dir);
+
+        // Memory status
+        let memory_dir = self.projects_dir.join(&encoded_path).join("memory");
+        let (mem_file_count, mem_line_count) = Self::collect_memory_status(&memory_dir);
+
         Some(AgentSession {
             pid: sf.pid,
             session_id: sf.session_id,
@@ -164,6 +178,12 @@ impl ClaudeCollector {
             mem_mb,
             version,
             git_branch,
+            git_added,
+            git_modified,
+            token_history,
+            subagents,
+            mem_file_count,
+            mem_line_count,
             children,
             transcript_offset: 0,
         })
@@ -252,6 +272,147 @@ impl ClaudeCollector {
         }
         map
     }
+
+    fn collect_git_stats(cwd: &str) -> (u32, u32) {
+        let output = Command::new("git")
+            .args(["-C", cwd, "status", "--porcelain"])
+            .output()
+            .ok();
+
+        let mut added = 0u32;
+        let mut modified = 0u32;
+
+        if let Some(output) = output {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    if line.len() < 2 {
+                        continue;
+                    }
+                    let status_code = &line[..2];
+                    // '??' = untracked (new), 'A ' or ' A' = added
+                    if status_code.contains('?') || status_code.contains('A') {
+                        added += 1;
+                    } else if status_code.contains('M') {
+                        modified += 1;
+                    }
+                }
+            }
+        }
+
+        (added, modified)
+    }
+
+    fn collect_subagents(subagents_dir: &Path) -> Vec<SubAgent> {
+        let mut subagents = Vec::new();
+
+        let entries = match fs::read_dir(subagents_dir) {
+            Ok(e) => e,
+            Err(_) => return subagents,
+        };
+
+        // Collect meta files and their corresponding jsonl files
+        let mut meta_files: Vec<PathBuf> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(".meta.json") {
+                    meta_files.push(path);
+                }
+            }
+        }
+
+        for meta_path in meta_files {
+            let meta_name = match meta_path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+
+            // Parse meta JSON
+            let meta_content = match fs::read_to_string(&meta_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let meta_val: Value = match serde_json::from_str(&meta_content) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let agent_type = meta_val.get("agentType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let description = meta_val.get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent")
+                .to_string();
+
+            // Derive jsonl path: agent-{hash}.meta.json -> agent-{hash}.jsonl
+            let jsonl_name = meta_name.replace(".meta.json", ".jsonl");
+            let jsonl_path = meta_path.with_file_name(&jsonl_name);
+
+            let mut tokens = 0u64;
+            let mut last_activity = std::time::UNIX_EPOCH;
+
+            if jsonl_path.exists() {
+                // Get file mtime for status
+                if let Ok(metadata) = fs::metadata(&jsonl_path) {
+                    if let Ok(mtime) = metadata.modified() {
+                        last_activity = mtime;
+                    }
+                }
+
+                // Parse jsonl for token totals
+                let transcript = parse_transcript(&jsonl_path, 0);
+                tokens = transcript.total_input + transcript.total_output
+                    + transcript.total_cache_read + transcript.total_cache_create;
+            }
+
+            let status = {
+                let since = std::time::SystemTime::now()
+                    .duration_since(last_activity)
+                    .unwrap_or_default();
+                if since.as_secs() < 30 {
+                    "working".to_string()
+                } else {
+                    "done".to_string()
+                }
+            };
+
+            // Use description as name, shorten if needed
+            let name = truncate(&description, 30);
+
+            subagents.push(SubAgent {
+                name,
+                agent_type,
+                status,
+                tokens,
+            });
+        }
+
+        subagents
+    }
+
+    fn collect_memory_status(memory_dir: &Path) -> (u32, u32) {
+        let mut file_count = 0u32;
+        let mut line_count = 0u32;
+
+        if let Ok(entries) = fs::read_dir(memory_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    file_count += 1;
+                }
+            }
+        }
+
+        let memory_md = memory_dir.join("MEMORY.md");
+        if let Ok(content) = fs::read_to_string(&memory_md) {
+            line_count = content.lines().count() as u32;
+        }
+
+        (file_count, line_count)
+    }
 }
 
 #[derive(Debug)]
@@ -276,6 +437,7 @@ struct TranscriptResult {
     git_branch: String,
     last_activity: std::time::SystemTime,
     new_offset: u64,
+    token_history: Vec<u64>,
 }
 
 fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
@@ -292,6 +454,7 @@ fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
         git_branch: String::new(),
         last_activity: std::time::UNIX_EPOCH,
         new_offset: from_offset,
+        token_history: Vec::new(),
     };
 
     let file = match fs::File::open(path) {
@@ -347,6 +510,8 @@ fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
                                     result.total_cache_create += cc;
                                     // Context = last turn's total input (this is what the model "sees")
                                     result.last_context_tokens = inp + cr + cc;
+                                    // Track per-turn total tokens for sparkline
+                                    result.token_history.push(inp + out + cr + cc);
                                 }
                                 // Extract current task from last tool_use
                                 if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
