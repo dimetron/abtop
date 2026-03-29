@@ -129,11 +129,15 @@ impl ClaudeCollector {
             0.0
         };
 
-        if !pid_alive && current_task.is_empty() {
-            current_task = "finished".to_string();
-        } else if matches!(status, SessionStatus::Waiting) && current_task.is_empty() {
-            current_task = "waiting for input".to_string();
-        }
+        let current_tasks = if !current_task.is_empty() {
+            vec![current_task]
+        } else if !pid_alive {
+            vec!["finished".to_string()]
+        } else if matches!(status, SessionStatus::Waiting) {
+            vec!["waiting for input".to_string()]
+        } else {
+            Vec::new()
+        };
 
         let mut children = Vec::new();
         if let Some(child_pids) = children_map.get(&sf.pid) {
@@ -177,7 +181,7 @@ impl ClaudeCollector {
             total_cache_read,
             total_cache_create,
             turn_count,
-            current_task,
+            current_tasks,
             mem_mb,
             version,
             git_branch,
@@ -501,6 +505,9 @@ fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
                     match val.get("type").and_then(|t| t.as_str()) {
                         Some("assistant") => {
                             result.turn_count += 1;
+                            // Clear previous task on each new turn so stale tasks
+                            // don't persist when latest turn has no tool_use
+                            result.current_task = String::new();
                             if let Some(msg) = val.get("message") {
                                 if let Some(m) = msg.get("model").and_then(|m| m.as_str()) {
                                     result.model = m.to_string();
@@ -519,7 +526,7 @@ fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
                                     // Track per-turn total tokens for sparkline
                                     result.token_history.push(inp + out + cr + cc);
                                 }
-                                // Extract current task from last tool_use
+                                // Extract last tool_use from latest turn (= currently running)
                                 if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
                                     for item in content.iter().rev() {
                                         if item.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
