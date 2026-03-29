@@ -798,7 +798,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(TITLE),
                 )),
                 Cell::from(Span::styled(
-                    summary_col,
+                    truncate_str(&summary_col, 28),
                     Style::default().fg(MAIN_FG),
                 )),
                 Cell::from(Span::styled(status_icon, Style::default().fg(status_color))),
@@ -873,10 +873,10 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),   // marker
         Constraint::Length(6),   // pid
         Constraint::Length(18),  // project(session_id)
-        Constraint::Min(12),     // summary (gets remaining space)
+        Constraint::Max(30),     // summary (capped at 30 chars)
         Constraint::Length(6),   // status
         Constraint::Length(6),   // model
-        Constraint::Length(5),   // ctx
+        Constraint::Length(7),   // context
         Constraint::Length(7),   // tokens
         Constraint::Length(5),   // mem
         Constraint::Length(4),   // turn
@@ -1088,7 +1088,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::styled("q", Style::default().fg(HI_FG)));
     spans.push(Span::styled(" quit ", Style::default().fg(MAIN_FG)));
     spans.push(Span::styled("r", Style::default().fg(HI_FG)));
-    spans.push(Span::styled(" refresh", Style::default().fg(MAIN_FG)));
+    spans.push(Span::styled(" force ", Style::default().fg(MAIN_FG)));
+    spans.push(Span::styled("2s auto", Style::default().fg(INACTIVE_FG)));
     spans.push(Span::styled(
         format!("{:>width$}", format!("{} sessions", app.sessions.len()), width = remaining),
         Style::default().fg(GRAPH_TEXT),
