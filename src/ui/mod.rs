@@ -252,32 +252,29 @@ pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     let h = area.height;
 
-    // Adaptive layout — shrink context first, then hide it; mid 4-panel row
-    // stays visible as long as possible. Sessions always get remaining space.
+    // Layout priority: sessions first → mid → context (only with surplus space)
+    // Sessions get their full ideal height before anything else.
 
-    const CONTEXT_MIN: u16 = 3;
-    const MID_MIN: u16 = 4;
+    const CONTEXT_MIN: u16 = 5;
     const FIXED: u16 = 2; // header + footer
 
     let mid_h_ideal: u16 = 8;
-    // Sessions need: header(1) + border(2) + 1 row per session + detail(2)
-    let sessions_ideal: u16 = (app.sessions.len() as u16 * 2 + 3).max(5);
-    // Context is lowest priority — cap it so sessions get enough space
-    let top_h_ideal: u16 = (app.sessions.len() as u16 + 4).min(10).max(5);
+    // Sessions: border(2) + header(1) + 2 rows/session + detail area
+    let sessions_ideal: u16 = (app.sessions.len() as u16 * 2 + 7).max(8);
+    let context_ideal: u16 = (app.sessions.len() as u16 + 4).min(10).max(5);
 
-    // Reserve enough for sessions first, then allocate the rest to context+mid
-    let sessions_min = sessions_ideal.min(h.saturating_sub(FIXED) / 2).max(5);
-    let budget = h.saturating_sub(FIXED + sessions_min);
-
-    let (context_h, mid_h) = if budget >= top_h_ideal + mid_h_ideal {
-        (top_h_ideal, mid_h_ideal)
-    } else if budget >= CONTEXT_MIN + mid_h_ideal {
-        (budget - mid_h_ideal, mid_h_ideal)
-    } else if budget >= CONTEXT_MIN + MID_MIN {
-        (CONTEXT_MIN, budget - CONTEXT_MIN)
+    let available = h.saturating_sub(FIXED);
+    // 1) Sessions get what they need first (min 5)
+    let sessions_h = sessions_ideal.min(available).max(5.min(available));
+    // 2) Mid gets ideal from remaining
+    let after_sessions = available.saturating_sub(sessions_h);
+    let mid_h = mid_h_ideal.min(after_sessions);
+    // 3) Context only if sessions are fully satisfied and surplus >= CONTEXT_MIN
+    let surplus = available.saturating_sub(sessions_h + mid_h);
+    let context_h = if sessions_h >= sessions_ideal && surplus >= CONTEXT_MIN {
+        context_ideal.min(surplus)
     } else {
-        // Not enough for both: drop context, give mid what's left
-        (0, budget)
+        0
     };
 
     let mut constraints = [Constraint::Length(0); 5];
@@ -289,7 +286,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if mid_h > 0 {
         constraints[n] = Constraint::Length(mid_h); n += 1;
     }
-    constraints[n] = Constraint::Min(sessions_min); n += 1;
+    constraints[n] = Constraint::Min(sessions_h); n += 1;
     constraints[n] = Constraint::Length(1); // footer
     n += 1;
 
@@ -938,20 +935,20 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
     let proc_grad = make_gradient(PROC_START, PROC_MID, PROC_END);
     let mut rows = Vec::new();
 
-    // Adaptive columns — priority order (last hidden first):
-    //   always: marker, AI, Project, Status, Context
-    //   w>=80:  + Session, Summary, Tokens
-    //   w>=100: + Model
-    //   w>=110: + Memory, Turn
-    //   w>=120: + Pid
+    // Responsive columns — 9 core columns always visible, widths shrink at narrow terminals.
+    // Only Memory/Turn/Pid are hidden when truly narrow.
     let w = inner.width;
     let show_pid = w >= 120;
-    let show_memory = w >= 110;
-    let show_turn = w >= 110;
-    let show_model = w >= 100;
-    let show_tokens = w >= 80;
-    let show_session = w >= 80;
-    let show_summary = w >= 80;
+    let show_memory = w >= 100;
+    let show_turn = w >= 100;
+
+    // Responsive widths — all 9 core columns always visible, widths adapt
+    let project_w: u16 = if w >= 120 { 14 } else if w >= 100 { 10 } else { 7 };
+    let session_w: u16 = if w >= 110 { 9 } else { 5 };
+    let status_w: u16 = if w >= 100 { 8 } else { 6 };
+    let model_w: u16 = if w >= 110 { 8 } else { 6 };
+    let context_w: u16 = 5;
+    let tokens_w: u16 = if w >= 100 { 7 } else { 5 };
 
     for (i, session) in app.sessions.iter().enumerate() {
         let selected = i == app.selected;
@@ -1000,7 +997,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
 
         let summary_col = app.session_summary(session);
 
-        // Build cells in priority order: always → conditional
+        // Build cells — 9 core columns always present, only Pid/Memory/Turn conditional
         let mut cells = vec![
             Cell::from(Span::styled(marker, Style::default().fg(HI_FG))),
             Cell::from(Span::styled(agent_label, Style::default().fg(agent_color))),
@@ -1011,46 +1008,36 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(INACTIVE_FG),
             )));
         }
-        cells.push(Cell::from(Span::styled(
-            truncate_str(&session.project_name, 14),
-            Style::default().fg(TITLE),
-        )));
-        if show_session {
-            cells.push(Cell::from(Span::styled(
-                sid_short.to_string(),
+        cells.extend([
+            Cell::from(Span::styled(
+                truncate_str(&session.project_name, project_w as usize),
+                Style::default().fg(TITLE),
+            )),
+            Cell::from(Span::styled(
+                truncate_str(sid_short, session_w as usize),
                 Style::default().fg(SESSION_ID),
-            )));
-        }
-        if show_summary {
-            cells.push(Cell::from(Span::styled(
-                summary_col,
-                Style::default().fg(MAIN_FG),
-            )));
-        }
-        cells.push(Cell::from(Span::styled(status_icon, Style::default().fg(status_color))));
-        if show_model {
-            cells.push(Cell::from(Span::styled(
-                truncate_str(&model_short, 10),
+            )),
+            Cell::from(Span::styled(summary_col, Style::default().fg(MAIN_FG))),
+            Cell::from(Span::styled(
+                truncate_str(status_icon, status_w as usize),
+                Style::default().fg(status_color),
+            )),
+            Cell::from(Span::styled(
+                truncate_str(&model_short, model_w as usize),
                 Style::default().fg(if model_short == "-" { INACTIVE_FG } else { GRAPH_TEXT }),
-            )));
-        }
-        cells.push(Cell::from(Span::styled(
-            format!("{:>3.0}%", session.context_percent),
-            Style::default().fg(ctx_color),
-        )));
-        if show_tokens {
-            cells.push(Cell::from(Span::styled(
+            )),
+            Cell::from(Span::styled(
+                format!("{:.0}%", session.context_percent),
+                Style::default().fg(ctx_color),
+            )),
+            Cell::from(Span::styled(
                 fmt_tokens(session.total_tokens()),
                 Style::default().fg(MAIN_FG),
-            )));
-        }
+            )),
+        ]);
         if show_memory {
             cells.push(Cell::from(Span::styled(
-                if session.mem_mb > 0 {
-                    format!("{}M", session.mem_mb)
-                } else {
-                    "—".to_string()
-                },
+                if session.mem_mb > 0 { format!("{}M", session.mem_mb) } else { "—".into() },
                 Style::default().fg(GRAPH_TEXT),
             )));
         }
@@ -1063,16 +1050,11 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
 
         rows.push(Row::new(cells).style(row_style).height(1));
 
-        // 2nd line: task text in the widest column position
-        let total_cols = 4 // marker + AI + Project + Status + Context (always)
-            + show_pid as usize + show_session as usize + show_summary as usize
-            + show_model as usize + show_tokens as usize
-            + show_memory as usize + show_turn as usize;
-        // Task text column: Summary if visible, otherwise Project
-        let task_col = 2 + show_pid as usize + 1 + show_session as usize; // after Project
-        let task_idx = if show_summary { task_col } else { 2 + show_pid as usize }; // Project col
+        // 2nd line: task text in Summary column
+        let summary_idx = if show_pid { 5 } else { 4 };
+        let total_cols = 9 + show_pid as usize + show_memory as usize + show_turn as usize;
         let task_cells: Vec<Cell> = (0..total_cols).map(|j| {
-            if j == task_idx {
+            if j == summary_idx {
                 let task_text = session.current_tasks.last().map(|s| s.as_str()).unwrap_or("");
                 Cell::from(Span::styled(
                     format!("└─ {}", task_text),
@@ -1095,21 +1077,15 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
     if show_pid {
         header_cells.push(Cell::from(Span::styled("Pid", header_style)));
     }
-    header_cells.push(Cell::from(Span::styled("Project", header_style)));
-    if show_session {
-        header_cells.push(Cell::from(Span::styled("Session", header_style)));
-    }
-    if show_summary {
-        header_cells.push(Cell::from(Span::styled("Summary", header_style)));
-    }
-    header_cells.push(Cell::from(Span::styled("Status", header_style)));
-    if show_model {
-        header_cells.push(Cell::from(Span::styled("Model", header_style)));
-    }
-    header_cells.push(Cell::from(Span::styled("Context", header_style)));
-    if show_tokens {
-        header_cells.push(Cell::from(Span::styled("Tokens", header_style)));
-    }
+    header_cells.extend([
+        Cell::from(Span::styled("Project", header_style)),
+        Cell::from(Span::styled("Sess", header_style)),
+        Cell::from(Span::styled("Summary", header_style)),
+        Cell::from(Span::styled("Status", header_style)),
+        Cell::from(Span::styled("Model", header_style)),
+        Cell::from(Span::styled("Ctx", header_style)),
+        Cell::from(Span::styled("Tokens", header_style)),
+    ]);
     if show_memory {
         header_cells.push(Cell::from(Span::styled("Memory", header_style)));
     }
@@ -1125,21 +1101,15 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
     if show_pid {
         widths_vec.push(Constraint::Length(6));   // pid
     }
-    widths_vec.push(if show_summary { Constraint::Length(14) } else { Constraint::Min(10) }); // project (expands when no summary)
-    if show_session {
-        widths_vec.push(Constraint::Length(9));   // session id
-    }
-    if show_summary {
-        widths_vec.push(Constraint::Min(10));     // summary
-    }
-    widths_vec.push(Constraint::Length(8));   // status
-    if show_model {
-        widths_vec.push(Constraint::Length(8));   // model
-    }
-    widths_vec.push(Constraint::Length(7));   // context
-    if show_tokens {
-        widths_vec.push(Constraint::Length(7));   // tokens
-    }
+    widths_vec.extend([
+        Constraint::Length(project_w),   // project
+        Constraint::Length(session_w),   // session id
+        Constraint::Min(6),              // summary (fills remaining)
+        Constraint::Length(status_w),    // status
+        Constraint::Length(model_w),     // model
+        Constraint::Length(context_w),   // context
+        Constraint::Length(tokens_w),    // tokens
+    ]);
     if show_memory {
         widths_vec.push(Constraint::Length(8));   // memory
     }
