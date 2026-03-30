@@ -11,22 +11,6 @@ const MAX_SUMMARY_JOBS: usize = 3;
 /// Max summary attempts per session before giving up.
 const MAX_SUMMARY_RETRIES: u32 = 2;
 
-/// Kill a process by PID (cross-platform).
-fn kill_process(pid: u32) {
-    #[cfg(unix)]
-    {
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .output();
-    }
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .output();
-    }
-}
-
 /// Produce a terminal-safe fallback summary from a raw prompt.
 fn sanitize_fallback(prompt: &str, max_len: usize) -> String {
     let cleaned: String = prompt.chars()
@@ -219,7 +203,9 @@ impl App {
             return;
         }
         let pid = session.pid;
-        kill_process(pid);
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
         self.tick();
     }
 
@@ -246,7 +232,9 @@ impl App {
             {
                 let current_cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if current_cmd == orphan.command {
-                    kill_process(orphan.pid);
+                    let _ = std::process::Command::new("kill")
+                        .args([&orphan.pid.to_string()])
+                        .output();
                 }
             }
         }
@@ -398,7 +386,9 @@ fn generate_summary(prompt: &str, assistant_text: &str) -> Option<String> {
         Ok(r) => r,
         Err(_) => {
             // Timeout or disconnected — kill the child so the helper thread can exit.
-            kill_process(child_pid);
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &child_pid.to_string()])
+                .status();
             return None;
         }
     };
