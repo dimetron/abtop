@@ -101,6 +101,17 @@ pub fn get_listening_ports() -> HashMap<u32, Vec<u16>> {
     map
 }
 
+/// Check if a command string has a given binary name in executable position.
+/// Checks the first two argv tokens only (covers direct invocation and
+/// interpreter-wrapped scripts like `node /path/to/codex ...`).
+pub fn cmd_has_binary(cmd: &str, name: &str) -> bool {
+    let mut tokens = cmd.split_whitespace().take(2);
+    tokens.any(|tok| {
+        let base = tok.rsplit('/').next().unwrap_or(tok);
+        base == name
+    })
+}
+
 pub fn collect_git_stats(cwd: &str) -> (u32, u32) {
     let output = Command::new("git")
         .args(["-C", cwd, "status", "--porcelain"])

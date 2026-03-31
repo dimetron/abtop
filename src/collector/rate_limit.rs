@@ -45,9 +45,11 @@ pub fn read_rate_limits() -> Vec<RateLimitInfo> {
 }
 
 /// Read cached Codex rate limit (fallback when no live session provides one).
+/// No staleness check — rate limits have their own `resets_at` expiry,
+/// and the cache is updated whenever the next Codex session runs.
 pub fn read_codex_cache() -> Option<RateLimitInfo> {
     let path = codex_cache_path()?;
-    read_rate_file(&path, "codex")
+    read_rate_file_impl(&path, "codex", false)
 }
 
 /// Write Codex rate limit to cache file (atomic: write temp + rename).
@@ -84,17 +86,23 @@ fn codex_cache_path() -> Option<PathBuf> {
 }
 
 fn read_rate_file(path: &Path, default_source: &str) -> Option<RateLimitInfo> {
+    read_rate_file_impl(path, default_source, true)
+}
+
+fn read_rate_file_impl(path: &Path, default_source: &str, check_staleness: bool) -> Option<RateLimitInfo> {
     let content = std::fs::read_to_string(path).ok()?;
     let file: RateLimitFile = serde_json::from_str(&content).ok()?;
 
-    // Ignore stale data (older than 10 minutes)
-    if let Some(updated) = file.updated_at {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if now.saturating_sub(updated) > 600 {
-            return None;
+    // Ignore stale data (older than 10 minutes) when staleness check is enabled
+    if check_staleness {
+        if let Some(updated) = file.updated_at {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now.saturating_sub(updated) > 600 {
+                return None;
+            }
         }
     }
 

@@ -270,8 +270,7 @@ impl CodexCollector {
         for (pid, info) in process_info {
             let cmd = &info.command;
             let is_exec = cmd.contains(" exec");
-            let bin = cmd.split_whitespace().next().unwrap_or("");
-            let is_codex = bin == "codex" || bin.ends_with("/codex");
+            let is_codex = process::cmd_has_binary(cmd, "codex");
             if is_codex
                 && !cmd.contains("app-server")
                 && !cmd.contains("grep")
