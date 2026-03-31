@@ -283,14 +283,20 @@ impl App {
             };
 
             if is_descendant_of(target_pid, pane_pid) {
-                let _ = std::process::Command::new("tmux")
-                    .args(["select-pane", "-t", pane_target])
-                    .status();
+                // Switch tmux client to the target session (needed for cross-session jumps)
+                if let Some(session_name) = pane_target.split(':').next() {
+                    let _ = std::process::Command::new("tmux")
+                        .args(["switch-client", "-t", session_name])
+                        .status();
+                }
                 if let Some(window) = pane_target.split('.').next() {
                     let _ = std::process::Command::new("tmux")
                         .args(["select-window", "-t", window])
                         .status();
                 }
+                let _ = std::process::Command::new("tmux")
+                    .args(["select-pane", "-t", pane_target])
+                    .status();
                 return None; // success
             }
         }
