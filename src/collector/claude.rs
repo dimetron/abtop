@@ -18,10 +18,12 @@ pub struct ClaudeCollector {
 
 impl ClaudeCollector {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_default();
+        let base = std::env::var("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".claude"));
         Self {
-            sessions_dir: home.join(".claude").join("sessions"),
-            projects_dir: home.join(".claude").join("projects"),
+            sessions_dir: base.join("sessions"),
+            projects_dir: base.join("projects"),
             transcript_cache: HashMap::new(),
         }
     }

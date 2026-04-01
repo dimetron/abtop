@@ -19,14 +19,16 @@ if fh:
 sd = rl.get('seven_day')
 if sd:
     out['seven_day'] = {'used_percentage': sd.get('used_percentage', 0), 'resets_at': sd.get('resets_at', 0)}
-home = os.path.expanduser('~')
-with open(os.path.join(home, '.claude', 'abtop-rate-limits.json'), 'w') as f:
+config_dir = os.environ.get('CLAUDE_CONFIG_DIR', os.path.join(os.path.expanduser('~'), '.claude'))
+with open(os.path.join(config_dir, 'abtop-rate-limits.json'), 'w') as f:
     json.dump(out, f)
 " "$INPUT" 2>/dev/null
 "#;
 
 fn claude_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".claude")
+    std::env::var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".claude"))
 }
 
 fn script_path() -> PathBuf {

@@ -34,7 +34,11 @@ pub fn read_rate_limits() -> Vec<RateLimitInfo> {
     let mut results = Vec::new();
 
     // Claude Code: read from StatusLine hook output file
-    if let Some(claude_dir) = dirs::home_dir().map(|h| h.join(".claude")) {
+    if let Some(claude_dir) = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".claude")))
+    {
         let path = claude_dir.join(CLAUDE_RATE_FILE);
         if let Some(info) = read_rate_file(&path, "claude") {
             results.push(info);
