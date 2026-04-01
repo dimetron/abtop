@@ -1020,7 +1020,7 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
     let session_w: u16 = if w >= 110 { 9 } else { 5 };
     let session_label = if w >= 110 { "Session" } else { "Sess" };
     let status_w: u16 = if w >= 100 { 8 } else { 6 };
-    let model_w: u16 = if w >= 110 { 8 } else { 6 };
+    let model_w: u16 = if w >= 110 { 13 } else { 10 };
     let context_w: u16 = if w >= 100 { 7 } else { 5 };
     let context_label = if w >= 100 { "Context" } else { "Ctx" };
     let tokens_w: u16 = if w >= 100 { 7 } else { 5 };
