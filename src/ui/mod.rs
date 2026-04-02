@@ -407,10 +407,12 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .count();
 
     let now = chrono::Local::now().format("%H:%M").to_string();
-    let remaining = (area.width as usize).saturating_sub(35);
-
+    let version = env!("CARGO_PKG_VERSION");
+    // " abtop vX.Y.Z " + "─" + " agent monitor " + right side (~12)
+    let header_fixed = format!(" abtop v{version} ").len() + 1 + 15 + 12;
+    let remaining = (area.width as usize).saturating_sub(header_fixed);
     let line = Line::from(vec![
-        Span::styled(" abtop ", Style::default().fg(TITLE).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" abtop v{version} "), Style::default().fg(TITLE).add_modifier(Modifier::BOLD)),
         Span::styled("─", Style::default().fg(DIV_LINE)),
         Span::styled(" agent monitor ", Style::default().fg(GRAPH_TEXT)),
         Span::styled(
