@@ -29,6 +29,17 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/graykode/abtop/releases
 cargo install abtop
 ```
 
+### From source (Makefile)
+
+```bash
+git clone https://github.com/graykode/abtop && cd abtop
+make install                      # → ~/.local/bin/abtop (default)
+make install PREFIX=$HOME         # → ~/bin/abtop
+sudo make install-system          # → /usr/local/bin/abtop
+make install-cargo                # → ~/.cargo/bin/abtop (via cargo install)
+make help                         # list all targets
+```
+
 ### Other
 
 Pre-built binaries for all platforms are available on the [GitHub Releases](https://github.com/graykode/abtop/releases) page.
@@ -69,18 +80,21 @@ tmux new -s work
 
 ## Supported Agents
 
-| Feature           | Claude Code | Codex CLI |
-| ----------------- | :---------: | :-------: |
-| Session Discovery |     ✅      |    ✅     |
-| Token Tracking    |     ✅      |    ✅     |
-| Context Window %  |     ✅      |    ✅     |
-| Status Detection  |     ✅      |    ✅     |
-| Current Task      |     ✅      |    ✅     |
-| Rate Limit        |     ✅      |    ✅     |
-| Git Status        |     ✅      |    ✅     |
-| Children / Ports  |     ✅      |    ✅     |
-| Subagents         |     ✅      |    ❌     |
-| Memory Status     |     ✅      |    ❌     |
+| Feature           | Claude Code | Codex CLI | pi-go |
+| ----------------- | :---------: | :-------: | :---: |
+| Session Discovery |     ✅      |    ✅     |  ✅   |
+| Token Tracking    |     ✅      |    ✅     |  ✅   |
+| Context Window %  |     ✅      |    ✅     |  ⚠️*  |
+| Status Detection  |     ✅      |    ✅     |  ✅   |
+| Current Task      |     ✅      |    ✅     |  ✅   |
+| Rate Limit        |     ✅      |    ✅     |  ❌   |
+| Git Status        |     ✅      |    ✅     |  ✅   |
+| Children / Ports  |     ✅      |    ✅     |  ✅   |
+| Subagents         |     ✅      |    ❌     |  ❌   |
+| Memory Status     |     ✅      |    ❌     |  ❌   |
+
+\* pi-go's `meta.json` does not always record the model name; context-% is
+computed only when the model is identifiable (Gemini / Claude / GPT families).
 
 ## Themes
 
