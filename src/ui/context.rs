@@ -51,10 +51,27 @@ pub(crate) fn draw_context_panel(f: &mut Frame, app: &App, area: Rect, theme: &T
         return;
     }
 
-    // Full mode: sparkline graph + context bars
+    // Full mode: sparkline graph + context bars.
+    // The bars half needs enough width to render "project (14) + session (9)
+    // + pct (5) + padding (~4) + bar (≥15)" = ~47 chars. On a 180-col
+    // terminal the old 65/35 split gave the bars just 63 cols (bar ≈ 16) and
+    // left the graph with 117 cols of mostly-flat braille.
+    // Flip the priority on wide screens so the bars get enough room to
+    // actually display a wide meter.
+    let bars_min: u16 = 50; // project(14)+session(9)+pct(5)+bar(~20)+pad
+    let bars_ideal: u16 = if inner.width >= 220 {
+        (inner.width as f32 * 0.50) as u16
+    } else if inner.width >= 160 {
+        (inner.width as f32 * 0.45) as u16
+    } else {
+        (inner.width as f32 * 0.38) as u16
+    };
+    let bars_w = bars_ideal.max(bars_min).min(inner.width.saturating_sub(20));
+    let graph_w = inner.width.saturating_sub(bars_w);
+
     let halves = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .constraints([Constraint::Length(graph_w), Constraint::Length(bars_w)])
         .split(inner);
 
     draw_context_sparkline(f, app, halves[0], &cpu_grad, theme);
@@ -106,8 +123,11 @@ fn draw_context_sparkline(f: &mut Frame, app: &App, area: Rect, cpu_grad: &[Colo
 fn draw_context_bars(f: &mut Frame, app: &App, area: Rect, cpu_grad: &[Color; 101], theme: &Theme) {
     let header_style = Style::default().fg(theme.main_fg).add_modifier(Modifier::BOLD);
 
-    // bar width = remaining space after Project(14) + Session(9) + pct(5) + padding
-    let bar_width = (area.width as usize).saturating_sub(30).clamp(4, 20);
+    // bar width = remaining space after Project(14) + Session(9) + pct(5) + padding.
+    // Remove the previous `.clamp(4, 20)` cap — on wide terminals we want the
+    // meter to actually use the available space. Keep a sensible minimum so
+    // it's still legible on narrow terminals.
+    let bar_width = (area.width as usize).saturating_sub(30).max(4);
 
     let mut rows = Vec::new();
 

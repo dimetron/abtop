@@ -22,10 +22,27 @@ pub(crate) fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect, theme: &
 
     // Session list: 1 header + 2 rows per session (main + 1 task line)
     let session_rows: u16 = app.sessions.len() as u16 * 2;
-    // Fixed detail height: keeps the detail panel stable regardless of content
-    let detail_reserve: u16 = 10.min(inner.height / 2);
+    // Detail pane: was fixed at min(10, inner.height/2) so on tall terminals
+    // the area below the SESSION line was mostly empty whitespace.
+    // Scale with height so children/subagents lists can actually breathe.
+    let detail_min: u16 = 7;      // SESSION + task + children header + ~4 items
+    let detail_ideal: u16 = if inner.height >= 40 {
+        18
+    } else if inner.height >= 30 {
+        14
+    } else if inner.height >= 20 {
+        10
+    } else {
+        detail_min
+    };
+    // Give the session table its ideal first, then the detail pane takes the
+    // rest — capped so a huge table doesn't starve the detail section.
+    let table_ideal = 1 + session_rows;
+    let detail_reserve = detail_ideal
+        .min(inner.height.saturating_sub(table_ideal.min(inner.height)).max(detail_min))
+        .max(detail_min.min(inner.height));
     let max_table = inner.height.saturating_sub(detail_reserve);
-    let table_h = (1 + session_rows).min(max_table);
+    let table_h = table_ideal.min(max_table);
 
     let panel_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -75,6 +92,7 @@ pub(crate) fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect, theme: &
             "claude" => ("*CC", Color::Rgb(217, 119, 87)),  // #D97757 terracotta
             "codex"  => (">CD", Color::Rgb(122, 157, 255)), // #7A9DFF periwinkle
             "pi"     => ("π PI", Color::Rgb(120, 200, 140)), // #78C88C pi-go green
+            "cursor" => ("◆ CR", Color::Rgb(161, 193, 255)), // #A1C1FF cursor blue
             other => {
                 let fallback: String = other.chars().take(3).collect::<String>().to_uppercase();
                 (Box::leak(fallback.into_boxed_str()) as &str, theme.inactive_fg)

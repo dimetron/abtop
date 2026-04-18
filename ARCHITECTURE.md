@@ -1,6 +1,6 @@
 # abtop — Architecture
 
-`abtop` is a single-binary, terminal-based observability tool for AI coding agents (Claude Code, OpenAI Codex CLI, and pi-go). It works like `htop`/`btop` but tracks live agent sessions, token usage, context windows, rate limits, child processes, open ports and git status — all read-only from the local filesystem and from `ps`/`lsof`.
+`abtop` is a single-binary, terminal-based observability tool for AI coding agents (Claude Code, OpenAI Codex CLI, pi-go, and Cursor Agent). It works like `htop`/`btop` but tracks live agent sessions, token usage, context windows, rate limits, child processes, open ports and git status — all read-only from the local filesystem and from `ps`/`lsof`.
 
 This document describes the runtime structure, components, data flow and key design decisions. For end-user docs see `README.md`; for an annotated layout walkthrough see `CLAUDE.md`.
 
@@ -26,19 +26,20 @@ This document describes the runtime structure, components, data flow and key des
        │ MultiCollector  │                            │  ratatui draw   │
        └────────┬────────┘                            └────────┬────────┘
                 │                                              │
-   ┌────────────┼─────────────┐                       ┌────────┴────────────────┐
-   │            │             │                       │ header context quota    │
-┌──▼──┐ ┌───────▼──────┐ ┌────▼─────┐                 │ tokens projects ports   │
-│Claude│ │   Codex     │ │  process │                 │ sessions footer         │
-│Coll. │ │   Coll.     │ │  + ports │                 └─────────────────────────┘
-└──┬──┘ └───────┬──────┘ └────┬─────┘
-   │            │             │
-   ▼            ▼             ▼
-~/.claude   ~/.codex      ps / lsof / git
-sessions    sessions      + ~/.pi-go
-+ JSONL     rollout JSONL   sessions
-transcripts                 (meta.json +
-                             events.jsonl)
+   ┌────────────┼──────────────┬──────────────┐       ┌────────┴────────────────┐
+   │            │              │              │       │ header context quota    │
+┌──▼──┐ ┌───────▼──────┐ ┌─────▼────┐ ┌───────▼─────┐ │ tokens projects ports   │
+│Claude│ │   Codex     │ │  pi-go   │ │   Cursor    │ │ sessions footer         │
+│Coll. │ │   Coll.     │ │  Coll.   │ │   Coll.     │ └─────────────────────────┘
+└──┬──┘ └───────┬──────┘ └────┬─────┘ └──────┬──────┘
+   │            │             │              │
+   ▼            ▼             ▼              ▼
+~/.claude   ~/.codex      ~/.pi-go       ~/.cursor
+sessions    sessions      sessions       projects/<enc>/
++ JSONL     rollout        (meta.json +   agent-transcripts/
+transcripts JSONL           events.jsonl)  <uuid>/<uuid>.jsonl
+                                     + ps / lsof / git
+                                       (shared by all)
 ```
 
 Three concerns are kept strictly separated:
@@ -80,6 +81,11 @@ src/
 │   ├── pi.rs            pi-go: discover via ps + lsof-cwd, match session
 │   │                    dirs in ~/.pi-go/sessions by workDir, incremental
 │   │                    events.jsonl parse (ADK session.Event format).
+│   ├── cursor.rs        Cursor Agent: scan ~/.cursor/projects/<enc>/
+│   │                    agent-transcripts, match to Cursor Helper
+│   │                    `extension-host (agent-exec) <basename>` by
+│   │                    project basename; tokens/model aren't written to
+│   │                    the local transcript so those fields stay blank.
 │   ├── process.rs       ps, lsof, git wrappers (ProcInfo, port map,
 │   │                    children map, git stats).
 │   └── rate_limit.rs    Read ~/.claude/abtop-rate-limits.json (Claude) and
@@ -92,6 +98,8 @@ src/
     ├── context.rs       Token-rate sparkline + per-session context-% bars.
     ├── quota.rs         Claude + Codex 5h / 7d rate-limit gauges.
     ├── tokens.rs        Token totals + per-turn sparkline.
+    ├── providers.rs     Cross-agent token usage broken down by LLM provider
+    │                    (Anthropic / OpenAI / Google / Other) with a stacked legend.
     ├── projects.rs      Per-project git branch + +/~ counts.
     ├── ports.rs         Listening ports + ORPHAN PORTS section.
     ├── sessions.rs      Main session table + selected-session detail.
@@ -163,7 +171,7 @@ trait AgentCollector {
 }
 ```
 
-Adding a new agent ≈ `impl AgentCollector for MyCollector` and registering it in `MultiCollector::new`. The repo ships three implementations (Claude, Codex, pi-go) that each illustrate a different discovery strategy — see §3.4.
+Adding a new agent ≈ `impl AgentCollector for MyCollector` and registering it in `MultiCollector::new`. The repo ships four implementations (Claude, Codex, pi-go, Cursor) that each illustrate a different discovery strategy — see §3.4.
 
 #### `SharedProcessData`
 Fetched once per tick and passed to every collector to avoid duplicate `ps`/`lsof` calls:
@@ -205,6 +213,16 @@ Ports are reused from cache unless the slow tick fires *or* the live PID set cha
 - Context window is approximated from the model name (`gemini-*` → 1M, `claude-*` → 200k / 1M, `gpt-*` → 128k); `0%` when the model is unknown or blank.
 - Sessions not currently owned by a live `pi` process but updated in the last 5 min surface briefly as Done (same UX as Codex), then disappear.
 
+#### `CursorCollector`
+- Source: `~/.cursor/projects/<encoded-cwd>/agent-transcripts/<uuid>/<uuid>.jsonl` — one JSONL file per Cursor Agent conversation. Each line is a `{"role":"user"|"assistant","message":{"content":[…]}}` turn.
+- Cursor Agent is the fourth discovery pattern: no pid file (Claude), no open rollout (Codex), no cwd-on-process (pi-go). Instead it's discovered by *process basename*:
+  1. Enumerate every project dir under `~/.cursor/projects/` whose name looks path-encoded (`Users-…`, `home-…`, …, rejecting purely numeric workspace ids like `1770471792203`).
+  2. Pick the most recently modified `<uuid>.jsonl` per project (freshness window: 10 min).
+  3. Match each project to a live `Cursor Helper (Plugin): extension-host (agent-exec) <basename>` PID by the basename that appears in both — e.g. `abtop` ↔ `Users-dimetron-p6s-pi-dev-abtop`.
+- The encoded-cwd → real-path decode is **lossy** (both `/` and `.` become `-`; long paths get a 7-char hex suffix). `decode_project_cwd` tries the naive `-` → `/` substitution, falls back to stripping the hex suffix, and — if neither hits the filesystem — keeps the naive decode for display. Exact path fidelity isn't critical because `git_branch` etc. are keyed off the *existing* cwd paths anyway.
+- Cursor writes **no** token counts, no model name and no rate-limit data into the local transcript (all of that lives server-side), so the collector reports `model = "-"`, `tokens = 0` and no rate-limit entry. The UI surfaces everything else: project, status, initial prompt, first assistant text, latest `tool_use` → current task, turn count (one per user→assistant transition, so multi-part assistant replies don't inflate the counter), children of the extension-host and any ports they own.
+- Same incremental parse pattern as the other collectors: `(inode, mtime)` + `new_offset`, partial trailing lines buffered for the next tick, Cursor's `<user_query>…</user_query>` wrapper stripped from the initial prompt display.
+
 #### `process.rs`
 Thin wrappers over `ps -ww -eo pid,ppid,rss,%cpu,command`, `lsof -i -P -n -sTCP:LISTEN` and `git -C <cwd> status --porcelain`. Provides `cmd_has_binary(cmd, name)` for safe binary-name matching against the first two argv tokens (handles interpreter wrappers like `node /path/to/codex …`).
 
@@ -227,7 +245,7 @@ The hook runs after each Claude turn, receives JSON on stdin, extracts `rate_lim
 **Layout priority** (top → bottom):
 
 1. **Sessions** panel — always shown, gets ideal height first (`2 × sessions + 7`).
-2. **Mid row** (4 panels split 25/25/25/25): quota, tokens, projects, ports — minimum 6 rows.
+2. **Mid row** — quota, tokens, projects, ports (minimum 6 rows). Terminals ≥ 160 cols also get a **providers** panel slotted between tokens and projects; the column splits reweight toward the info-dense panels on ≥ 220 cols.
 3. **Context** panel (sparkline + per-session bars) — only if sessions are at ideal height *and* surplus ≥ 5 rows.
 4. **Header** (1 row) and **Footer** (1 row) — always present.
 
@@ -237,6 +255,8 @@ The hook runs after each Claude turn, receives JSON on stdin, extracts `rate_lim
 - `braille_sparkline` — 1-row braille graph (5×5 lookup `BRAILLE_UP`).
 - `braille_graph_multirow` — multi-row filled braille area graph (used for the token-rate panel).
 - `btop_block(title, number)` — rounded border with notch numbering identical to btop.
+
+**`providers` panel.** Aggregates `total_tokens()` across every live session into four provider buckets (Anthropic, OpenAI, Google, Other). `provider_for_session` uses `agent_cli` as the primary signal — Claude Code always maps to Anthropic, Codex CLI to OpenAI — and falls back to model-name inference for `pi-go` (which can dispatch to any backend). Cursor sessions report no token telemetry locally and sit in "Other" with a session count but zero tokens. The panel renders four per-provider meter bars plus a stacked legend bar at the bottom; the stacked bar is floor-allocated with a remainder pass so it always fills exactly `width` cells regardless of rounding. See `src/ui/providers.rs`.
 
 ### 3.7 `theme.rs` + `config.rs`
 
@@ -301,7 +321,7 @@ Used by `--demo` (and by the GIF tape in `assets/demo.tape`). Populates `App` wi
 
 | What you want                | Where                                                      |
 | ---------------------------- | ---------------------------------------------------------- |
-| Add a new agent (e.g. Aider) | `impl AgentCollector` in a new `src/collector/<name>.rs`, register it in `MultiCollector::new`, add a label in `ui/sessions.rs` (see `pi.rs` for a worked example) |
+| Add a new agent (e.g. Aider) | `impl AgentCollector` in a new `src/collector/<name>.rs`, register it in `MultiCollector::new`, add a label in `ui/sessions.rs` (`pi.rs` shows a cwd-based discovery strategy; `cursor.rs` shows a basename-matched strategy when no usage telemetry is available locally) |
 | Add a new theme              | New constructor on `Theme` + entry in `THEME_NAMES`        |
 | Add a new panel              | New file in `src/ui/`, layout slot in `ui::mod::draw`      |
 | New context-window model     | Extend the model→size mapping in the Claude / Codex collector |

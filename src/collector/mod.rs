@@ -1,11 +1,13 @@
 pub mod claude;
 pub mod codex;
+pub mod cursor;
 pub mod pi;
 pub mod process;
 pub mod rate_limit;
 
 pub use claude::ClaudeCollector;
 pub use codex::CodexCollector;
+pub use cursor::CursorCollector;
 pub use pi::PiCollector;
 pub use rate_limit::read_rate_limits;
 
@@ -78,6 +80,7 @@ impl MultiCollector {
                 Box::new(ClaudeCollector::new()),
                 Box::new(CodexCollector::new()),
                 Box::new(PiCollector::new()),
+                Box::new(CursorCollector::new()),
             ],
             tick_count: SLOW_POLL_INTERVAL, // trigger on first tick
             cached_ports: HashMap::new(),
@@ -144,8 +147,9 @@ impl MultiCollector {
             }
         }
 
-        // Hide dead sessions: Codex uses pid==0 sentinel, Claude is filtered in collect().
-        all.retain(|s| !matches!(s.status, SessionStatus::Done));
+        // Keep recently finished sessions from collectors (Codex/Pi/Cursor use a
+        // short grace window) so they can transition to Done instead of
+        // disappearing immediately. Each collector is responsible for eviction.
         all.sort_by_key(|s| std::cmp::Reverse(s.started_at));
 
         // --- Orphan port detection ---

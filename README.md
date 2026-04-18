@@ -2,7 +2,7 @@
 
 **Like htop, but for your AI coding agents.**
 
-See every Claude Code and Codex CLI session at a glance — token usage, context window %, rate limits, child processes, open ports, and more.
+See every Claude Code, Codex CLI, pi-go and Cursor Agent session at a glance — token usage, context window %, rate limits, child processes, open ports, and more.
 
 ![demo](assets/demo.gif)
 
@@ -80,21 +80,27 @@ tmux new -s work
 
 ## Supported Agents
 
-| Feature           | Claude Code | Codex CLI | pi-go |
-| ----------------- | :---------: | :-------: | :---: |
-| Session Discovery |     ✅      |    ✅     |  ✅   |
-| Token Tracking    |     ✅      |    ✅     |  ✅   |
-| Context Window %  |     ✅      |    ✅     |  ⚠️*  |
-| Status Detection  |     ✅      |    ✅     |  ✅   |
-| Current Task      |     ✅      |    ✅     |  ✅   |
-| Rate Limit        |     ✅      |    ✅     |  ❌   |
-| Git Status        |     ✅      |    ✅     |  ✅   |
-| Children / Ports  |     ✅      |    ✅     |  ✅   |
-| Subagents         |     ✅      |    ❌     |  ❌   |
-| Memory Status     |     ✅      |    ❌     |  ❌   |
+| Feature           | Claude Code | Codex CLI | pi-go | Cursor Agent |
+| ----------------- | :---------: | :-------: | :---: | :----------: |
+| Session Discovery |     ✅      |    ✅     |  ✅   |      ✅      |
+| Token Tracking    |     ✅      |    ✅     |  ✅   |      ❌†     |
+| Context Window %  |     ✅      |    ✅     |  ⚠️*  |      ❌†     |
+| Status Detection  |     ✅      |    ✅     |  ✅   |      ✅      |
+| Current Task      |     ✅      |    ✅     |  ✅   |      ✅      |
+| Rate Limit        |     ✅      |    ✅     |  ❌   |      ❌†     |
+| Git Status        |     ✅      |    ✅     |  ✅   |      ✅      |
+| Children / Ports  |     ✅      |    ✅     |  ✅   |      ✅      |
+| Subagents         |     ✅      |    ❌     |  ❌   |      ❌      |
+| Memory Status     |     ✅      |    ❌     |  ❌   |      ❌      |
 
 \* pi-go's `meta.json` does not always record the model name; context-% is
 computed only when the model is identifiable (Gemini / Claude / GPT families).
+
+† Cursor Agent transcripts (`~/.cursor/projects/<enc>/agent-transcripts/<uuid>/<uuid>.jsonl`)
+don't include token counts, model names, or rate-limit data — those live
+server-side. abtop still surfaces the session, project, current tool call,
+initial prompt, and live status by matching the workspace to Cursor's
+`extension-host (agent-exec)` helper process.
 
 ## Themes
 

@@ -25,13 +25,16 @@ use std::process::Command;
 /// 2. Resolve each process's cwd via `lsof -a -d cwd -Fn -p <pid>`.
 /// 3. Scan `~/.pi-go/sessions/*/meta.json`, match the most-recently-updated
 ///    session whose `workDir` equals a live pi process cwd.
-/// 4. Recently-updated sessions (< 5 min) not owned by any live `pi` are
-///    surfaced briefly as Done (same UX as Codex).
+/// 4. Recently-updated sessions (< 2h) not owned by any live `pi` are
+///    surfaced as Done for short-term history.
 pub struct PiCollector {
     sessions_dir: PathBuf,
     /// Incremental parse cache, keyed by `session_id` (the uuid dir name).
     transcript_cache: HashMap<String, TranscriptResult>,
 }
+
+/// Keep finished pi sessions visible in the UI for 2 hours.
+const HISTORY_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
 
 impl PiCollector {
     pub fn new() -> Self {
@@ -116,8 +119,8 @@ impl PiCollector {
             }
         }
 
-        // 5. Recently-finished sessions: show for up to 5 min so they transition
-        //    to Done instead of vanishing the instant the pi process exits.
+        // 5. Recently-finished sessions: keep for up to 2h so the sessions
+        //    list can show short-term history.
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -126,7 +129,7 @@ impl PiCollector {
             if used_sessions.contains(&meta.id) {
                 continue;
             }
-            if meta.updated_at_ms == 0 || now_ms.saturating_sub(meta.updated_at_ms) > 5 * 60 * 1000 {
+            if meta.updated_at_ms == 0 || now_ms.saturating_sub(meta.updated_at_ms) > HISTORY_WINDOW_MS {
                 continue;
             }
             if let Some(session) = self.load_session(

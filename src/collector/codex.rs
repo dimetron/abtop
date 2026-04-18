@@ -25,6 +25,9 @@ pub struct CodexCollector {
     pub last_rate_limit: Option<RateLimitInfo>,
 }
 
+/// Keep finished Codex sessions visible for 2 hours.
+const HISTORY_WINDOW_SECS: u64 = 2 * 60 * 60;
+
 impl CodexCollector {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_default();
@@ -76,9 +79,9 @@ impl CodexCollector {
             }
         }
 
-        // Recently finished sessions: scan today's JSONL files not owned by any running process.
-        // This ensures Codex sessions transition to Done instead of vanishing.
-        if let Some(recent_dir) = Self::today_session_dir(&self.sessions_dir) {
+        // Recently finished sessions: scan the last 2h JSONL files not owned
+        // by any running process (covers crossing midnight).
+        for recent_dir in Self::recent_session_dirs(&self.sessions_dir) {
             if let Ok(entries) = fs::read_dir(&recent_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -88,13 +91,12 @@ impl CodexCollector {
                     if seen_jsonl.contains(&path) {
                         continue;
                     }
-                    // Only show recently finished sessions (< 5 min old)
                     if let Ok(meta) = fs::metadata(&path) {
                         if let Ok(modified) = meta.modified() {
                             let age = std::time::SystemTime::now()
                                 .duration_since(modified)
                                 .unwrap_or_default();
-                            if age.as_secs() > 300 {
+                            if age.as_secs() > HISTORY_WINDOW_SECS {
                                 continue;
                             }
                         }
@@ -111,10 +113,11 @@ impl CodexCollector {
                             let newer = self.last_rate_limit.as_ref()
                                 .is_none_or(|old| new_rl.updated_at > old.updated_at);
                             if newer {
-                        super::rate_limit::write_codex_cache(&new_rl);
-                        self.last_rate_limit = Some(new_rl);
-                    }
+                                super::rate_limit::write_codex_cache(&new_rl);
+                                self.last_rate_limit = Some(new_rl);
+                            }
                         }
+                        seen_jsonl.insert(path.clone());
                         sessions.push(session);
                     }
                 }
@@ -125,14 +128,21 @@ impl CodexCollector {
         sessions
     }
 
-    /// Get today's session directory path: ~/.codex/sessions/YYYY/MM/DD
-    fn today_session_dir(sessions_dir: &Path) -> Option<PathBuf> {
+    /// Get session directories that can contain files from the last 2h:
+    /// today + yesterday (handles crossing midnight).
+    fn recent_session_dirs(sessions_dir: &Path) -> Vec<PathBuf> {
         let now = chrono::Local::now();
-        let dir = sessions_dir
-            .join(now.format("%Y").to_string())
-            .join(now.format("%m").to_string())
-            .join(now.format("%d").to_string());
-        if dir.exists() { Some(dir) } else { None }
+        let mut out = Vec::new();
+        for day in [now, now - chrono::Duration::days(1)] {
+            let dir = sessions_dir
+                .join(day.format("%Y").to_string())
+                .join(day.format("%m").to_string())
+                .join(day.format("%d").to_string());
+            if dir.exists() && !out.iter().any(|d| d == &dir) {
+                out.push(dir);
+            }
+        }
+        out
     }
 
     fn load_session_with_rate_limit(

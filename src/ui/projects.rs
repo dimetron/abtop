@@ -11,12 +11,15 @@ use super::{btop_block, grad_at, make_gradient, truncate_str};
 pub(crate) fn draw_projects_panel(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let mut lines = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    // Scale project-name width with available panel width so wide screens
+    // show full paths like "platform-istio-build" instead of truncating.
+    let name_w = (area.width as usize).saturating_sub(3).clamp(10, 40);
     for session in &app.sessions {
         if !seen.insert(&session.project_name) {
             continue;
         }
         lines.push(Line::from(vec![Span::styled(
-            format!(" {}", truncate_str(&session.project_name, 14)),
+            format!(" {}", truncate_str(&session.project_name, name_w)),
             Style::default()
                 .fg(theme.title)
                 .add_modifier(Modifier::BOLD),

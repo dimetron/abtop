@@ -1,8 +1,10 @@
+mod agents;
 mod context;
 mod footer;
 mod header;
 mod ports;
 mod projects;
+mod providers;
 mod quota;
 mod sessions;
 mod tokens;
@@ -283,15 +285,36 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     // Layout priority: sessions first → mid → context (only with surplus space)
-    // Sessions get their full ideal height before anything else.
+    // Sessions get their full ideal height before anything else. Once they're
+    // satisfied, remaining rows are split between mid and context so wide/tall
+    // terminals don't end up with a big empty strip below the session detail.
 
     const CONTEXT_MIN: u16 = 5;
     const FIXED: u16 = 2; // header + footer
 
-    let mid_h_ideal: u16 = 8;
-    // Sessions: border(2) + header(1) + 2 rows/session + detail area
-    let sessions_ideal: u16 = (app.sessions.len() as u16 * 2 + 7).max(8);
-    let context_ideal: u16 = (app.sessions.len() as u16 + 4).clamp(5, 10);
+    // Mid row ideal grows on tall terminals so the panels can breathe.
+    // Apply a +10% bump for top widgets as requested.
+    let bump_10pct = |v: u16| -> u16 { (((v as u32) * 11 + 9) / 10) as u16 };
+
+    // Mid row ideal grows on tall terminals so the four panels can breathe
+    // (more rows for sparklines, extra meter lines, fresher freshness labels).
+    let mid_h_ideal_base: u16 = if h >= 60 {
+        12
+    } else if h >= 45 {
+        10
+    } else {
+        8
+    };
+    let mid_h_ideal = bump_10pct(mid_h_ideal_base);
+    // Sessions: border(2) + header(1) + 2 rows/session + detail area.
+    // On tall terminals we reserve more room for the detail / children panel.
+    let detail_ideal: u16 = if h >= 60 { 14 } else if h >= 40 { 11 } else { 7 };
+    let sessions_ideal: u16 = (app.sessions.len() as u16 * 2 + 1 + detail_ideal).max(8);
+    // Context also scales with height — on a 45-row terminal we want the area
+    // graph at ~8 rows tall, not a skinny 5.
+    let context_cap: u16 = if h >= 60 { 16 } else if h >= 45 { 12 } else { 10 };
+    let context_ideal_base: u16 = (app.sessions.len() as u16 + 4).clamp(5, context_cap);
+    let context_ideal: u16 = bump_10pct(context_ideal_base).min(context_cap);
 
     let available = h.saturating_sub(FIXED);
     const MID_MIN: u16 = 6;
@@ -338,20 +361,108 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     if mid_h > 0 {
-        let mid_panels = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(25), // quota (rate limit)
-                Constraint::Percentage(25), // tokens
-                Constraint::Percentage(25), // projects
-                Constraint::Percentage(25), // ports
-            ])
-            .split(chunks[idx]);
+        // The mid row shows up to five info-dense panels. On narrow terminals
+        // we drop the `providers` panel first, then the `agents` panel.
+        // Per-provider/per-agent breakdowns are lower-priority than projects
+        // and ports when screen real estate is tight.
+        //
+        // show_providers: quota + tokens + providers + projects + ports
+        // show_agents:    quota + tokens + providers + agents + projects + ports
+        // actionable when screen real estate is tight).
+        let show_providers = w >= 160;
+        let show_agents = w >= 190;
 
-        quota::draw_quota_panel(f, app, mid_panels[0], theme);
-        tokens::draw_tokens_panel(f, app, mid_panels[1], theme);
-        projects::draw_projects_panel(f, app, mid_panels[2], theme);
-        ports::draw_ports_panel(f, app, mid_panels[3], theme);
+        if show_providers && show_agents {
+            // 6 panels. Keep charts readable (tokens/providers/agents) while
+            // preserving enough space for projects/ports.
+            let mid_constraints: [Constraint; 6] = if w >= 240 {
+                [
+                    Constraint::Percentage(16), // quota
+                    Constraint::Percentage(20), // tokens
+                    Constraint::Percentage(18), // providers
+                    Constraint::Percentage(16), // agents
+                    Constraint::Percentage(16), // projects
+                    Constraint::Percentage(14), // ports
+                ]
+            } else {
+                [
+                    Constraint::Percentage(17),
+                    Constraint::Percentage(19),
+                    Constraint::Percentage(17),
+                    Constraint::Percentage(16),
+                    Constraint::Percentage(16),
+                    Constraint::Percentage(15),
+                ]
+            };
+            let mid_panels = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(mid_constraints)
+                .split(chunks[idx]);
+
+            quota::draw_quota_panel(f, app, mid_panels[0], theme);
+            tokens::draw_tokens_panel(f, app, mid_panels[1], theme);
+            providers::draw_providers_panel(f, app, mid_panels[2], theme);
+            agents::draw_agents_panel(f, app, mid_panels[3], theme);
+            projects::draw_projects_panel(f, app, mid_panels[4], theme);
+            ports::draw_ports_panel(f, app, mid_panels[5], theme);
+        } else if show_providers {
+            // 5 panels. Bias the split toward the two chart-heavy panels
+            // (tokens + providers) on ultrawide terminals.
+            let mid_constraints: [Constraint; 5] = if w >= 220 {
+                [
+                    Constraint::Percentage(18), // quota
+                    Constraint::Percentage(24), // tokens
+                    Constraint::Percentage(22), // providers
+                    Constraint::Percentage(20), // projects
+                    Constraint::Percentage(16), // ports
+                ]
+            } else {
+                [
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(22),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(18),
+                ]
+            };
+            let mid_panels = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(mid_constraints)
+                .split(chunks[idx]);
+
+            quota::draw_quota_panel(f, app, mid_panels[0], theme);
+            tokens::draw_tokens_panel(f, app, mid_panels[1], theme);
+            providers::draw_providers_panel(f, app, mid_panels[2], theme);
+            projects::draw_projects_panel(f, app, mid_panels[3], theme);
+            ports::draw_ports_panel(f, app, mid_panels[4], theme);
+        } else {
+            // 4 panels — original layout. Bias toward tokens/projects at 150+.
+            let mid_constraints: [Constraint; 4] = if w >= 150 {
+                [
+                    Constraint::Percentage(24),
+                    Constraint::Percentage(28),
+                    Constraint::Percentage(26),
+                    Constraint::Percentage(22),
+                ]
+            } else {
+                [
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(25),
+                ]
+            };
+            let mid_panels = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(mid_constraints)
+                .split(chunks[idx]);
+
+            quota::draw_quota_panel(f, app, mid_panels[0], theme);
+            tokens::draw_tokens_panel(f, app, mid_panels[1], theme);
+            projects::draw_projects_panel(f, app, mid_panels[2], theme);
+            ports::draw_ports_panel(f, app, mid_panels[3], theme);
+        }
+
         idx += 1;
     }
 

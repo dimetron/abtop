@@ -37,7 +37,9 @@ pub(crate) fn draw_tokens_panel(f: &mut Frame, app: &App, area: Rect, theme: &Th
     let used_grad = make_gradient(theme.used_grad.start, theme.used_grad.mid, theme.used_grad.end);
     let cached_grad = make_gradient(theme.cached_grad.start, theme.cached_grad.mid, theme.cached_grad.end);
 
-    let bar_w = (area.width as usize).saturating_sub(20).clamp(5, 15);
+    // Leave room for the leading " Input :" (8 chars) + trailing " 99.9k" (~7 chars).
+    // Previously capped at 15 which wasted half the width on ≥200-col terminals.
+    let bar_w = (area.width as usize).saturating_sub(17).clamp(5, 40);
 
     let total_line = vec![
         styled_label(" Total: ", theme.graph_text),
@@ -82,7 +84,8 @@ pub(crate) fn draw_tokens_panel(f: &mut Frame, app: &App, area: Rect, theme: &Th
         .get(app.selected)
         .map(|s| s.token_history.clone())
         .unwrap_or_default();
-    let spark_w = (area.width as usize).saturating_sub(16).clamp(5, 20);
+    // Sparkline: use most of the panel width so it shows useful history.
+    let spark_w = (area.width as usize).saturating_sub(16).clamp(5, 80);
     let max_val = all_history.iter().copied().max().unwrap_or(1).max(1);
     let normalized: Vec<f64> = all_history
         .iter()
